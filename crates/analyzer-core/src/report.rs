@@ -30,6 +30,24 @@ fn risk_summary(findings: &[&Finding]) -> String {
         counts[4], counts[3], counts[2], counts[1], counts[0]
     )
 }
+fn compact_risk_summary(findings: &[&Finding]) -> String {
+    let mut counts = [0; 5];
+    for finding in findings {
+        counts[finding.severity.rank() as usize] += 1;
+    }
+    [
+        (4, "严重"),
+        (3, "高危"),
+        (2, "中危"),
+        (1, "低危"),
+        (0, "信息"),
+    ]
+    .into_iter()
+    .filter(|(rank, _)| counts[*rank] != 0)
+    .map(|(rank, label)| format!("{label} {}", counts[rank]))
+    .collect::<Vec<_>>()
+    .join("  ·  ")
+}
 
 pub fn terminal(report: &AnalysisReport, limit: usize, tree: bool) -> String {
     terminal_with_raw(report, limit, tree, false)
@@ -178,15 +196,26 @@ fn record_summary(record: &Record) -> String {
 }
 
 pub fn terminal_with_raw(report: &AnalysisReport, limit: usize, tree: bool, raw: bool) -> String {
-    let mut out = format!(
-        "Easy Analyzer · {}\nSources: {} | Records: {} | Findings: {} | Flows: {} | Diagnostics: {}\n",
-        report.generated_at,
+    let mut out = String::from("Easy Analyzer · 应急分析\n");
+    if raw {
+        let _ = writeln!(out, "生成时间：{}", report.generated_at);
+    }
+    let _ = write!(
+        out,
+        "来源 {}  ·  记录 {}",
         report.sources.len(),
-        report.records.len(),
-        report.findings.len(),
-        report.flows.len(),
-        report.diagnostics.len()
+        report.records.len()
     );
+    if let Some(ids) = &report.query_matches {
+        let _ = write!(out, "  ·  查询命中 {}", ids.len());
+    }
+    if !report.flows.is_empty() {
+        let _ = write!(out, "  ·  网络会话 {}", report.flows.len());
+    }
+    if !report.diagnostics.is_empty() {
+        let _ = write!(out, "  ·  诊断 {}", report.diagnostics.len());
+    }
+    out.push('\n');
     for (index, s) in report.sources.iter().enumerate() {
         let _ = write!(
             out,
@@ -224,14 +253,22 @@ pub fn terminal_with_raw(report: &AnalysisReport, limit: usize, tree: bool, raw:
             .collect::<std::collections::HashSet<_>>()
     });
     let findings = ordered_findings(report, true);
-    out.push_str("\nFindings / 分析发现\n");
-    let _ = writeln!(out, "  {}（分析发现项数）", risk_summary(&findings));
+    let _ = writeln!(out, "\n分析发现 · {} 项", findings.len());
+    if !findings.is_empty() {
+        let _ = writeln!(out, "{}", compact_risk_summary(&findings));
+    }
     if findings.is_empty() {
         out.push_str("  当前范围未命中规则。\n");
     }
     let mut record_findings: std::collections::HashMap<&str, Vec<&Finding>> =
         std::collections::HashMap::new();
     let mut omitted_evidence = false;
+    let mut previous_severity = None;
+    let count_width = findings
+        .iter()
+        .map(|f| f.evidence_ids.len().to_string().len())
+        .max()
+        .unwrap_or(1);
     for f in &findings {
         for id in &f.evidence_ids {
             record_findings.entry(id).or_default().push(f);
@@ -241,13 +278,51 @@ pub fn terminal_with_raw(report: &AnalysisReport, limit: usize, tree: bool, raw:
             .iter()
             .filter(|id| matches.as_ref().is_none_or(|m| m.contains(id.as_str())))
             .collect();
-        let shown = if !raw {
-            if limit == 0 {
-                ids.len().min(3)
-            } else {
-                limit.min(ids.len()).min(3)
+        if !raw {
+            if previous_severity != Some(f.severity.rank()) {
+                let _ = writeln!(out, "\n{}", f.severity.label());
+                previous_severity = Some(f.severity.rank());
             }
-        } else if limit == 0 {
+            let _ = write!(
+                out,
+                "  {:>width$} 条  {}",
+                ids.len(),
+                brief(&f.title),
+                width = count_width
+            );
+            if report.sources.len() > 1
+                && let Some(record) = ids.first().and_then(|id| records_by_id.get(id.as_str()))
+                && let Some(source) = report.sources.iter().find(|s| s.id == record.source_id)
+            {
+                let _ = write!(
+                    out,
+                    "  ·  {}",
+                    brief(
+                        source
+                            .path
+                            .rsplit(['/', '\\'])
+                            .next()
+                            .unwrap_or(&source.path)
+                    )
+                );
+            }
+            out.push('\n');
+            // These findings need their actor/command context to remain actionable.
+            if matches!(
+                f.origin.as_str(),
+                "local:login-failures"
+                    | "local:success-after-failures"
+                    | "local:process-command"
+                    | "local:process-temp-path"
+                    | "local:office-shell"
+                    | "local:network-web-probe"
+            ) || !f.origin.starts_with("local:")
+            {
+                let _ = writeln!(out, "        {}", brief(&f.description));
+            }
+            continue;
+        }
+        let shown = if limit == 0 {
             ids.len()
         } else {
             limit.min(ids.len())
@@ -263,13 +338,7 @@ pub fn terminal_with_raw(report: &AnalysisReport, limit: usize, tree: bool, raw:
             ids.len(),
             ids.iter()
                 .take(shown)
-                .map(|id| if raw {
-                    id.to_string()
-                } else {
-                    records_by_id
-                        .get(id.as_str())
-                        .map_or_else(|| "未知证据".into(), |r| location(r))
-                })
+                .map(|id| id.to_string())
                 .collect::<Vec<_>>()
                 .join(", ")
         );
@@ -280,13 +349,13 @@ pub fn terminal_with_raw(report: &AnalysisReport, limit: usize, tree: bool, raw:
         out.push('\n');
     }
     if tree {
-        out.push_str("\nProcess tree / 进程树\n");
+        out.push_str("\n进程树\n");
         out.push_str(&process_tree(&report.records));
     }
     out.push_str(if raw {
-        "\n重要记录摘要及原始内容\n"
+        "\n记录详情\n"
     } else {
-        "\n重要记录摘要（-R 可查看原始内容）\n"
+        "\n记录摘要\n"
     });
     let mut selected: Vec<_> = report
         .records
@@ -354,9 +423,6 @@ pub fn terminal_with_raw(report: &AnalysisReport, limit: usize, tree: bool, raw:
     if selected.len() > n {
         let _ = writeln!(out, "  已显示 {n}/{} 条记录。", selected.len());
     }
-    if let Some(ids) = &report.query_matches {
-        let _ = writeln!(out, "Query matches: {}", ids.len());
-    }
     for d in report
         .diagnostics
         .iter()
@@ -378,8 +444,13 @@ pub fn terminal_with_raw(report: &AnalysisReport, limit: usize, tree: bool, raw:
             report.diagnostics.len() - limit
         );
     }
-    if omitted_evidence || selected.len() > n || (limit != 0 && report.diagnostics.len() > limit) {
-        out.push_str("\n完整查看：-n 0 显示全部摘要；-R -n 0 显示全部引用及原始记录。JSON/HTML 保留完整证据。\n");
+    if !raw && (!findings.is_empty() || !selected.is_empty()) {
+        out.push_str("\n查看详情 -R  ·  全部摘要 -n 0  ·  导出报告 -j 路径 / -H 路径\n");
+    } else if omitted_evidence
+        || selected.len() > n
+        || (limit != 0 && report.diagnostics.len() > limit)
+    {
+        out.push_str("\n全部记录与引用 -n 0  ·  导出报告 -j 路径 / -H 路径\n");
     }
     out.chars()
         .flat_map(|c| {

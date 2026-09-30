@@ -230,13 +230,13 @@ pub struct CommonArgs {
         default_value_t = 50,
         value_name = "N",
         help_heading = "报告输出",
-        help = "终端记录、诊断及原始模式证据引用上限；0 显示全部，摘要引用最多 3 个"
+        help = "终端记录、诊断及详情证据引用上限；0 显示全部，不裁剪 JSON/HTML"
     )]
     limit: usize,
     #[arg(
         long,
         help_heading = "报告输出",
-        help = "在终端摘要后显示原始记录；默认只显示关键字段，不影响 JSON/HTML"
+        help = "显示发现解释、规则 ID、置信度、证据引用和原始记录；默认精简展示"
     )]
     raw: bool,
     #[arg(

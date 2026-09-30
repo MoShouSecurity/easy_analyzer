@@ -81,7 +81,7 @@ fn mixed_routing_and_three_outputs() {
     let html = std::fs::read_to_string(html).unwrap();
     assert!(html.contains("进程关系"));
     assert!(html.contains("网络会话"));
-    assert!(String::from_utf8_lossy(&out.stdout).contains("Findings"));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("分析发现"));
 }
 #[test]
 fn stdin_and_json_stdout() {
