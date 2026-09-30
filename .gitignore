@@ -2,7 +2,7 @@
 /cases/
 /reports/
 /evidence/
-/config.toml
+config.toml
 /.env
 /.env.*
 /*.local.toml

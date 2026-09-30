@@ -85,21 +85,10 @@ impl AiConfig {
     }
 }
 pub fn default_config_path() -> PathBuf {
-    if cfg!(target_os = "windows")
-        && let Some(root) = std::env::var_os("APPDATA")
-    {
-        return PathBuf::from(root).join("easy-analyzer/config.toml");
-    }
-    if let Some(root) = std::env::var_os("XDG_CONFIG_HOME") {
-        return PathBuf::from(root).join("easy-analyzer/config.toml");
-    }
-    let root = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    root.join(".config/easy-analyzer/config.toml")
+    PathBuf::from("config.toml")
 }
 pub fn init_config(path: &Path) -> Result<()> {
-    if let Some(parent) = path.parent() {
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent)?;
     }
     use std::io::Write;

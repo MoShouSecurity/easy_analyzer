@@ -57,7 +57,7 @@ pub struct Cli {
         global = true,
         value_name = "PATH",
         help_heading = "AI 分析",
-        help = "AI 配置文件路径；省略时使用用户配置目录"
+        help = "AI 配置文件路径；省略时使用当前工作目录的 config.toml"
     )]
     pub config: Option<PathBuf>,
     #[command(subcommand)]
@@ -123,8 +123,7 @@ AI 默认只接收包摘要；--include-payload 额外发送原始包与载荷�
   4. easy-analyzer logs cases/Security.evtx -a
 
 自定义配置路径：easy-analyzer -c settings.toml config init
-Linux/macOS 默认：$XDG_CONFIG_HOME/easy-analyzer/config.toml 或 ~/.config/easy-analyzer/config.toml
-Windows 默认：%APPDATA%/easy-analyzer/config.toml
+所有平台默认：当前工作目录的 config.toml（运行命令时所在的目录）
 config check 会发送一个不含案件证据的小请求，可能产生服务费用。")]
     Config {
         #[command(subcommand)]

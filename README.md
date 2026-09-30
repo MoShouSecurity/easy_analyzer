@@ -67,7 +67,7 @@ cat cases/auth.log | ./easy-analyzer logs - -f text
 
 ## AI 配置
 
-运行 `./easy-analyzer config init` 创建配置，填写 `base_url`、`model`，将密钥设到 `api_key_env` 指定的环境变量；使用 `-c settings.toml` 可指定配置文件。
+运行 `./easy-analyzer config init` 在当前工作目录创建 `config.toml`，填写 `base_url`、`model`，将密钥设到 `api_key_env` 指定的环境变量；默认从当前目录读取配置，使用 `-c settings.toml` 可指定其他文件。
 
 ```sh
 # 检查 AI 服务连接
