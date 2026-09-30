@@ -97,7 +97,7 @@ fn run(cli: Cli) -> Result<bool> {
                 ConfigCommand::Init => {
                     ai::init_config(&config_path)?;
                     println!(
-                        "已创建配置 {}\n请编辑 base_url/model，并在 api_key_env 指定的环境变量中设置密钥。",
+                        "已创建配置 {}\n默认使用 DeepSeek deepseek-flash，请设置 DEEPSEEK_API_KEY 环境变量；其他服务可修改 base_url/model/api_key_env。",
                         config_path.display()
                     );
                 }

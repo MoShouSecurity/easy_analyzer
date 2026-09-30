@@ -118,12 +118,13 @@ AI 默认只接收包摘要；--include-payload 额外发送原始包与载荷�
     /// AI 配置：创建模板、查看设置、检查服务
     #[command(after_help = "配置步骤：
   1. easy-analyzer config init
-  2. 编辑配置中的 base_url、model；将密钥设到 api_key_env 指定的环境变量
+  2. 默认使用 DeepSeek deepseek-flash；将密钥设到 DEEPSEEK_API_KEY 环境变量
   3. easy-analyzer config check
   4. easy-analyzer logs cases/Security.evtx -a
 
 自定义配置路径：easy-analyzer -c settings.toml config init
 所有平台默认：当前工作目录的 config.toml（运行命令时所在的目录）
+其他 AI 服务可修改 base_url、model 和 api_key_env。
 config check 会发送一个不含案件证据的小请求，可能产生服务费用。")]
     Config {
         #[command(subcommand)]

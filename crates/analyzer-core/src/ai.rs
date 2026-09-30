@@ -29,12 +29,12 @@ pub struct AiConfig {
 impl Default for AiConfig {
     fn default() -> Self {
         Self {
-            base_url: "http://127.0.0.1:11434/v1".into(),
-            model: "configure-your-model".into(),
-            api_key_env: "EASY_ANALYZER_API_KEY".into(),
-            timeout_seconds: 120,
+            base_url: "https://api.deepseek.com".into(),
+            model: "deepseek-flash".into(),
+            api_key_env: "DEEPSEEK_API_KEY".into(),
+            timeout_seconds: 300,
             batch_bytes: 24_000,
-            max_output_tokens: 4096,
+            max_output_tokens: 65_536,
             response_format: "json_object".into(),
             token_parameter: "max_tokens".into(),
         }

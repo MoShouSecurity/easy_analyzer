@@ -2,6 +2,11 @@
 
 2026-09-30，在 macOS ARM64 开发环境完成以下验证。
 
+## 0.1.10 DeepSeek 默认配置
+
+- 对照 DeepSeek 官方文档设置 API 地址、`deepseek-flash` 模型、JSON 输出与 `max_tokens` 参数；配置模板默认读取 `DEEPSEEK_API_KEY`。
+- 格式检查与 Clippy 静态检查通过；本轮未新增或运行回归测试，未向真实 AI 服务发送请求。
+
 ## 0.1.9 当前目录配置
 
 - 默认配置路径改为当前工作目录的 `config.toml`，修正相对文件名创建时的父目录处理；`-c` 仍可指定其他位置。

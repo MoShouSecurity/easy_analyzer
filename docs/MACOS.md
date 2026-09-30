@@ -47,8 +47,8 @@ CLI 默认将发现按风险分组显示命中数量和规则名称，每条记�
 
 ```sh
 ./easy-analyzer config init
-# 编辑当前工作目录的 config.toml 中的服务地址和模型
-export EASY_ANALYZER_API_KEY='your-key'
+# 默认使用 DeepSeek deepseek-flash；其他服务可编辑当前目录的 config.toml
+export DEEPSEEK_API_KEY='your-key'
 ./easy-analyzer logs /path/to/Security.evtx -a -S suspicious
 ```
 

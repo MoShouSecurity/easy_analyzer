@@ -67,15 +67,20 @@ cat cases/auth.log | ./easy-analyzer logs - -f text
 
 ## AI 配置
 
-运行 `./easy-analyzer config init` 在当前工作目录创建 `config.toml`，填写 `base_url`、`model`，将密钥设到 `api_key_env` 指定的环境变量；默认从当前目录读取配置，使用 `-c settings.toml` 可指定其他文件。
+运行 `./easy-analyzer config init` 在当前工作目录创建 `config.toml`，默认使用 [DeepSeek 官方服务](https://api-docs.deepseek.com/) 的 `deepseek-flash` 模型；默认从当前目录读取配置，使用 `-c settings.toml` 可指定其他文件。
 
 ```sh
+# 在当前终端设置 DeepSeek 密钥（macOS/Linux）
+export DEEPSEEK_API_KEY='你的密钥'
+
 # 检查 AI 服务连接
 ./easy-analyzer config check
 
 # 仅将本地规则命中的可疑日志发送给 AI
 ./easy-analyzer logs cases/Security.evtx -a -S suspicious
 ```
+
+其他服务可修改配置中的 `base_url`、`model` 和 `api_key_env`。默认请求超时为 300 秒，每批证据上限 24000 字节，输出 token 上限 65536，使用 `json_object` 和 `max_tokens`。
 
 仅指定 `-a` 时发送证据，所选数据不会自动脱敏；PCAP 默认发送解析摘要，添加 `-P` 才发送原始包和载荷。
 
