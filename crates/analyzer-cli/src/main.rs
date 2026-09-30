@@ -1,4 +1,5 @@
 mod cli;
+mod diagnostics;
 
 use analyzer_core::{
     AnalysisReport, IngestOptions, InputFormat, RecordData, ai, collect, report, rules,
@@ -19,7 +20,7 @@ fn write_output(path: Option<&Path>, data: &str) -> Result<()> {
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             fs::create_dir_all(parent)?;
         }
-        fs::write(path, data).with_context(|| format!("cannot write {}", path.display()))?;
+        fs::write(path, data).with_context(|| format!("无法写入报告 {}", path.display()))?;
     } else {
         let mut stdout = io::stdout().lock();
         stdout.write_all(data.as_bytes())?;
@@ -49,10 +50,10 @@ fn resolved_path(path: &Path) -> Result<PathBuf> {
         tail.push(
             ancestor
                 .file_name()
-                .context("cannot resolve output path")?
+                .context("无法解析报告输出路径")?
                 .to_os_string(),
         );
-        ancestor = ancestor.parent().context("cannot resolve output parent")?;
+        ancestor = ancestor.parent().context("无法解析报告输出的父目录")?;
     }
     let mut result = ancestor.canonicalize()?;
     for part in tail.into_iter().rev() {
@@ -77,12 +78,12 @@ fn validate_outputs(args: &AnalysisArgs, config_path: &Path) -> Result<()> {
         let resolved = resolved_path(path)?;
         if inputs.contains(&resolved) || resolved == config {
             bail!(
-                "output would overwrite an input/configuration: {}",
+                "报告输出会覆盖输入文件或配置：{}",
                 path.display()
             );
         }
         if !outputs.insert(resolved) {
-            bail!("report output paths must be distinct");
+            bail!("各个报告输出路径必须不同");
         }
     }
     Ok(())
@@ -99,20 +100,20 @@ fn run(cli: Cli) -> Result<bool> {
                 ConfigCommand::Init => {
                     ai::init_config(&config_path)?;
                     println!(
-                        "Created {}\nEdit base_url/model; set the API key in the configured environment variable.",
+                        "已创建配置 {}\n请编辑 base_url/model，并在 api_key_env 指定的环境变量中设置密钥。",
                         config_path.display()
                     );
                 }
                 ConfigCommand::Show => {
                     println!(
-                        "Configuration: {}\n{}",
+                        "配置文件：{}\n{}",
                         config_path.display(),
                         toml_config(&ai::AiConfig::load(&config_path)?)
                     );
                 }
                 ConfigCommand::Check => {
                     ai::check(&ai::AiConfig::load(&config_path)?)?;
-                    println!("AI connection and JSON response validation succeeded.");
+                    println!("AI 连接与 JSON 响应校验成功。");
                 }
             }
             return Ok(true);
@@ -122,23 +123,23 @@ fn run(cli: Cli) -> Result<bool> {
         args.live_processes = true;
     }
     if args.files.is_empty() && !args.auto_load && !args.live_processes {
-        bail!("provide input files, --auto-load or --live-processes");
+        bail!("请提供输入文件，或指定 --auto-load / --live-processes");
     }
     if kind == "pcap" && (args.auto_load || args.live_processes) {
-        bail!("pcap accepts capture files only");
+        bail!("pcap 命令只接受离线抓包文件");
     }
     if kind == "processes" && args.auto_load {
-        bail!("use logs/analyze for --auto-load");
+        bail!("请在 logs/analyze 命令中使用 --auto-load");
     }
     if matches!(args.ai_scope, AiScope::Matches) && args.query.is_none() && !args.suspicious {
-        bail!("--ai-scope matches requires --query or --suspicious");
+        bail!("--ai-scope matches 需要同时提供 --query 或 --suspicious");
     }
     validate_outputs(&args, &config_path)?;
     if args.files.iter().filter(|p| p.as_os_str() == "-").count() > 1 {
-        bail!("stdin (-) may only appear once");
+        bail!("标准输入（-）只能指定一次");
     }
     if args.max_file_mb == 0 || args.max_records == 0 {
-        bail!("input limits must be positive");
+        bail!("文件大小和记录数上限必须大于 0");
     }
     let web_format = if let Some(path) = &args.web_format_file {
         Some(fs::read_to_string(path)?)
@@ -162,7 +163,7 @@ fn run(cli: Cli) -> Result<bool> {
         max_file_bytes: args
             .max_file_mb
             .checked_mul(1024 * 1024)
-            .context("file size limit overflow")?,
+            .context("文件大小上限超出可表示范围")?,
         max_records: args.max_records,
     };
     let mut report = AnalysisReport::default();
@@ -189,7 +190,7 @@ fn run(cli: Cli) -> Result<bool> {
                     report.error(
                         path.to_string_lossy(),
                         None,
-                        "input belongs to processes/pcap; use analyze for automatic routing",
+                        "该输入属于进程快照或抓包文件，请使用 analyze 自动分类",
                     );
                 } else {
                     report.merge(r);
@@ -292,7 +293,7 @@ fn run(cli: Cli) -> Result<bool> {
                 && resolved_path(Path::new(&source.path))? == resolved
             {
                 bail!(
-                    "output would overwrite collected evidence: {}",
+                    "报告输出会覆盖已采集的证据：{}",
                     path.display()
                 );
             }
@@ -316,7 +317,7 @@ fn run(cli: Cli) -> Result<bool> {
         .iter()
         .any(|d| d.level == analyzer_core::DiagnosticLevel::Error);
     if !success {
-        eprintln!("Analysis completed with source/AI failures; see report diagnostics.");
+        eprintln!("分析已完成，但部分来源或 AI 分析失败；请查看报告中的诊断信息。");
     }
     Ok(success)
 }
@@ -324,13 +325,19 @@ fn toml_config(c: &ai::AiConfig) -> String {
     serde_json::to_string_pretty(c).unwrap_or_default()
 }
 fn main() -> ExitCode {
-    let matches = cli::command().get_matches();
-    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
+    let matches = match cli::command().try_get_matches() {
+        Ok(matches) => matches,
+        Err(error) => return diagnostics::report(error),
+    };
+    let cli = match Cli::from_arg_matches(&matches) {
+        Ok(cli) => cli,
+        Err(error) => return diagnostics::report(error),
+    };
     match run(cli) {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
         Err(e) => {
-            eprintln!("Error: {e:#}");
+            eprintln!("错误：{e:#}");
             ExitCode::FAILURE
         }
     }

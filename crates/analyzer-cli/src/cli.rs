@@ -408,6 +408,11 @@ pub fn command() -> clap::Command {
                     "max_records" => 71,
                     _ => 90,
                 };
+                let arg = if arg.get_id() == "files" {
+                    arg.value_name("文件")
+                } else {
+                    arg
+                };
                 arg.display_order(order)
             })
             .mut_subcommands(configure)
