@@ -40,7 +40,7 @@ impl Default for AiConfig {
             api_key: String::new(),
             api_key_env: String::new(),
             timeout_seconds: 300,
-            batch_bytes: 65_536,
+            batch_bytes: 98_304,
             max_output_tokens: 65_536,
             response_format: "json_object".into(),
             token_parameter: "max_tokens".into(),

@@ -78,7 +78,7 @@ cat cases/auth.log | ./easy-analyzer logs - -f text
 ./easy-analyzer logs cases/Security.evtx -a -S suspicious
 ```
 
-其他服务可修改配置中的 `base_url`、`model` 和 `api_key`。默认请求超时为 300 秒，每批证据文本上限 65536 字节（不含提示词和传输编码），输出 token 上限 65536，使用 `json_object` 和 `max_tokens`；`config show` 隐藏密钥。
+其他服务可修改配置中的 `base_url`、`model` 和 `api_key`。默认请求超时为 300 秒，每批证据文本上限 96 KiB（`batch_bytes = 98304`，不含提示词和传输编码），输出 token 上限 65536，使用 `json_object` 和 `max_tokens`；`config show` 隐藏密钥。
 
 `-n` 只控制终端显示数量；AI 默认分析全部记录，可用 `-S suspicious` 仅分析可疑项，或配合查询使用 `-S matches`。
 
