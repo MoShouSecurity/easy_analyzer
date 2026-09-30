@@ -9,8 +9,7 @@ if [[ "$(uname -s)" != Darwin ]]; then
 fi
 
 VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
-PACKAGE_NAME="easy-analyzer-${VERSION}-macos-arm64"
-PACKAGE_DIR="$PROJECT_ROOT/dist/$PACKAGE_NAME"
+PACKAGE_DIR="$PROJECT_ROOT/dist"
 BUILD_ROOT="${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}"
 if [[ "$BUILD_ROOT" != /* ]]; then BUILD_ROOT="$PROJECT_ROOT/$BUILD_ROOT"; fi
 
@@ -21,7 +20,7 @@ cargo build --release --locked --target aarch64-apple-darwin
 mkdir -p "$PROJECT_ROOT/dist"
 STAGING="$(mktemp -d "$PROJECT_ROOT/dist/.macos-package.XXXXXX")"
 trap 'rm -rf "$STAGING"' EXIT
-STAGED_PACKAGE="$STAGING/$PACKAGE_NAME"
+STAGED_PACKAGE="$STAGING/package"
 mkdir -p "$STAGED_PACKAGE/docs"
 cp "$BUILD_ROOT/aarch64-apple-darwin/release/easy-analyzer" "$STAGED_PACKAGE/easy-analyzer"
 chmod 755 "$STAGED_PACKAGE/easy-analyzer"

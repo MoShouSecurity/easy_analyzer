@@ -39,45 +39,35 @@ jobs:
       - name: Package Linux
         if: runner.os == 'Linux'
         run: |
-          mkdir -p dist/easy-analyzer-linux-x64
-          cp target/release/easy-analyzer README.md LICENSE dist/easy-analyzer-linux-x64/
-          cp -R tests/fixtures dist/easy-analyzer-linux-x64/samples
-          tar -czf dist/easy-analyzer-linux-x64.tar.gz -C dist easy-analyzer-linux-x64
-          sha256sum dist/easy-analyzer-linux-x64.tar.gz > dist/easy-analyzer-linux-x64.tar.gz.sha256
+          mkdir -p dist
+          cp target/release/easy-analyzer README.md LICENSE dist/
+          cp -R tests/fixtures dist/samples
       - name: Package Windows
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force dist/easy-analyzer-windows-x64 | Out-Null
-          Copy-Item target/release/easy-analyzer.exe,README.md,LICENSE dist/easy-analyzer-windows-x64/
-          Copy-Item tests/fixtures dist/easy-analyzer-windows-x64/samples -Recurse
-          Compress-Archive dist/easy-analyzer-windows-x64/* dist/easy-analyzer-windows-x64.zip
-          (Get-FileHash dist/easy-analyzer-windows-x64.zip -Algorithm SHA256).Hash | Set-Content dist/easy-analyzer-windows-x64.zip.sha256
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/easy-analyzer.exe,README.md,LICENSE dist/
+          Copy-Item tests/fixtures dist/samples -Recurse
       - name: Package macOS
         if: runner.os == 'macOS'
         run: |
           test "$(uname -m)" = arm64
-          package="easy-analyzer-macos-$(uname -m)"
-          mkdir -p "dist/$package/docs"
-          cp target/release/easy-analyzer README.md LICENSE "dist/$package/"
-          cp docs/MACOS.md docs/VALIDATION.md "dist/$package/docs/"
-          cp docs/MACOS.md "dist/$package/开始使用.md"
-          cp tools/macos-demo.command "dist/$package/演示.command"
-          chmod 755 "dist/$package/演示.command"
-          cp -R tests/fixtures "dist/$package/samples"
-          codesign --force --sign - "dist/$package/easy-analyzer"
-          codesign --verify --strict "dist/$package/easy-analyzer"
+          mkdir -p dist/docs
+          cp target/release/easy-analyzer README.md LICENSE dist/
+          cp docs/MACOS.md docs/VALIDATION.md dist/docs/
+          cp docs/MACOS.md dist/开始使用.md
+          cp tools/macos-demo.command dist/演示.command
+          chmod 755 dist/演示.command
+          cp -R tests/fixtures dist/samples
+          codesign --force --sign - dist/easy-analyzer
+          codesign --verify --strict dist/easy-analyzer
           {
             echo "git_commit=$GITHUB_SHA"
             echo "architectures=$(uname -m)"
             echo "code_signing=ad-hoc (not notarized)"
-          } > "dist/$package/BUILD_INFO.txt"
-          tar -czf "dist/$package.tar.gz" -C dist "$package"
-          shasum -a 256 "dist/$package.tar.gz" > "dist/$package.tar.gz.sha256"
+          } > dist/BUILD_INFO.txt
       - uses: actions/upload-artifact@v4
         with:
           name: easy-analyzer-${{ runner.os }}-${{ runner.arch }}
-          path: |
-            dist/*.zip
-            dist/*.tar.gz
-            dist/*.sha256
+          path: dist/
