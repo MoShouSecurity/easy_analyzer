@@ -1,72 +1,105 @@
-name: manual-build-and-package
+name: release-binaries
 # 仅在用户明确要求发布 Releases 时手动触发；推送源码和标签不触发构建。
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: '发布版本号（不含 v，须从对应版本标签运行）'
+        required: true
+        type: string
 permissions:
   contents: read
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
 jobs:
-  verify:
+  build:
+    name: Build ${{ matrix.platform }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, windows-2022, macos-latest]
+        include:
+          - os: ubuntu-22.04
+            platform: linux-x64
+            target: x86_64-unknown-linux-gnu
+            suffix: ''
+          - os: windows-2022
+            platform: windows-x64
+            target: x86_64-pc-windows-msvc
+            suffix: '.exe'
+          - os: macos-latest
+            platform: macos-arm64
+            target: aarch64-apple-darwin
+            suffix: ''
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      BUILD_TARGET: ${{ matrix.target }}
+      RELEASE_FILE: easy-analyzer-${{ matrix.platform }}${{ matrix.suffix }}
+      BINARY_SUFFIX: ${{ matrix.suffix }}
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
     steps:
       - uses: actions/checkout@v4
+      - name: Validate release source
+        run: |
+          [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$GITHUB_REF" = "refs/tags/v$RELEASE_VERSION"
+          SOURCE_VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+          test "$SOURCE_VERSION" = "$RELEASE_VERSION"
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo test --workspace --locked
-      - run: cargo build --release --locked
-      - run: cargo run --locked -- processes --limit 3
-      - name: Windows native System log export
-        if: runner.os == 'Windows'
-        shell: pwsh
+      - run: cargo build --release --locked --target "$BUILD_TARGET"
+      - name: Stage program only
         run: |
-          New-Item -ItemType Directory -Force cases | Out-Null
-          wevtutil epl System cases/System.evtx
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ./target/release/easy-analyzer.exe logs cases/System.evtx --output json --out reports/system.json
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $report = Get-Content reports/system.json -Raw | ConvertFrom-Json
-          if ($report.sources.Count -ne 1) { throw 'Missing event log source' }
-      - name: Package Linux
-        if: runner.os == 'Linux'
-        run: |
-          mkdir -p dist
-          cp target/release/easy-analyzer README.md LICENSE dist/
-          cp -R docs dist/docs
-          cp -R tests/fixtures dist/samples
-      - name: Package Windows
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item target/release/easy-analyzer.exe,README.md,LICENSE dist/
-          Copy-Item docs dist/docs -Recurse
-          Copy-Item tests/fixtures dist/samples -Recurse
-      - name: Package macOS
-        if: runner.os == 'macOS'
-        run: |
-          test "$(uname -m)" = arm64
-          mkdir -p dist/docs
-          cp target/release/easy-analyzer README.md LICENSE dist/
-          cp docs/MACOS.md docs/VALIDATION.md docs/DEFAULT_RULES.md dist/docs/
-          sed 's|](DEFAULT_RULES.md)|](docs/DEFAULT_RULES.md)|g' docs/MACOS.md > dist/开始使用.md
-          cp tools/macos-demo.command dist/演示.command
-          chmod 755 dist/演示.command
-          cp -R tests/fixtures dist/samples
-          codesign --force --sign - dist/easy-analyzer
-          codesign --verify --strict dist/easy-analyzer
-          {
-            echo "git_commit=$GITHUB_SHA"
-            echo "architectures=$(uname -m)"
-            echo "code_signing=ad-hoc (not notarized)"
-          } > dist/BUILD_INFO.txt
+          mkdir -p release
+          cp "target/$BUILD_TARGET/release/easy-analyzer$BINARY_SUFFIX" "release/$RELEASE_FILE"
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            codesign --force --sign - "release/$RELEASE_FILE"
+            codesign --verify --strict "release/$RELEASE_FILE"
+            lipo "release/$RELEASE_FILE" -verify_arch arm64
+          fi
+          "release/$RELEASE_FILE" --version
       - uses: actions/upload-artifact@v4
         with:
-          name: easy-analyzer-${{ runner.os }}-${{ runner.arch }}
-          path: dist/
+          name: program-${{ matrix.platform }}
+          path: release/${{ env.RELEASE_FILE }}
+          if-no-files-found: error
+          retention-days: 7
+  draft:
+    name: Prepare clean release draft
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: program-*
+          path: release
+          merge-multiple: true
+      - name: Generate SHA256 and create draft
+        shell: bash
+        run: |
+          cd release
+          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 3
+          sha256sum easy-analyzer-linux-x64 easy-analyzer-windows-x64.exe easy-analyzer-macos-arm64 > SHA256SUMS
+          sha256sum --check SHA256SUMS
+          cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
+          应急响应分析 CLI：日志、进程、离线网络分析及 AI 辅助分析，支持终端、JSON、HTML 报告。
+
+          下载对应平台的独立程序；SHA256SUMS 包含三个程序的 SHA-256 校验值。
+          macOS 为 Apple Silicon ARM64 版本，使用 ad-hoc 签名，未进行 Apple 公证。
+          NOTES
+          gh release create "v$RELEASE_VERSION" \
+            easy-analyzer-linux-x64 easy-analyzer-windows-x64.exe easy-analyzer-macos-arm64 SHA256SUMS \
+            --verify-tag --draft --title "Easy Analyzer v$RELEASE_VERSION" \
+            --notes-file "$RUNNER_TEMP/release-notes.md"
