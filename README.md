@@ -102,6 +102,6 @@ macOS 请手动导入离线日志，`-l` 仅适用于 Windows/Linux；utmp/wtmp/
 
 安装 Rust 1.95+、C/C++ 构建工具和 CMake 后，运行 `cargo build --release --locked`，程序生成在 `target/release/`。
 
-GitHub 推送只同步源码，不自动构建、打包或发布。仅在明确要求“发布 Releases”时手动执行构建、打包和发布。
+日常提交和分支推送不触发 GitHub Actions。只有明确要求“打包成 tag”时，才创建并推送 `vX.Y.Z` 发布标签；Actions 自动构建三平台程序、生成并校验 SHA-256，然后发布到 Releases。标签版本必须与源码版本一致。
 
 [Releases](https://github.com/MoShouSecurity/easy_analyzer/releases) 附件仅包含 Windows x64、Linux x64、macOS ARM64 三个独立程序及 `SHA256SUMS`，不附文档、样本或压缩包。
