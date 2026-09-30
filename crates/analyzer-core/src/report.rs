@@ -231,6 +231,7 @@ pub fn terminal_with_raw(report: &AnalysisReport, limit: usize, tree: bool, raw:
     }
     let mut record_findings: std::collections::HashMap<&str, Vec<&Finding>> =
         std::collections::HashMap::new();
+    let mut omitted_evidence = false;
     for f in &findings {
         for id in &f.evidence_ids {
             record_findings.entry(id).or_default().push(f);
@@ -251,7 +252,7 @@ pub fn terminal_with_raw(report: &AnalysisReport, limit: usize, tree: bool, raw:
         } else {
             limit.min(ids.len())
         };
-        let _ = writeln!(
+        let _ = write!(
             out,
             "  [{}] {} ({}, 置信度 {:.2})\n    {}\n    证据（当前范围 {} 条）：{}",
             f.severity.label(),
@@ -273,12 +274,10 @@ pub fn terminal_with_raw(report: &AnalysisReport, limit: usize, tree: bool, raw:
                 .join(", ")
         );
         if shown < ids.len() {
-            let _ = writeln!(
-                out,
-                "    其余 {} 条证据引用见 JSON/HTML；-R -n 0 显示全部引用及原始记录。",
-                ids.len() - shown
-            );
+            omitted_evidence = true;
+            let _ = write!(out, "（另有 {} 条）", ids.len() - shown);
         }
+        out.push('\n');
     }
     if tree {
         out.push_str("\nProcess tree / 进程树\n");
@@ -342,11 +341,7 @@ pub fn terminal_with_raw(report: &AnalysisReport, limit: usize, tree: bool, raw:
         }
     }
     if selected.len() > n {
-        let _ = writeln!(
-            out,
-            "  已显示 {n}/{} 条记录；-n 0 显示全部摘要，-R 显示原始内容，JSON/HTML 保留完整证据。",
-            selected.len()
-        );
+        let _ = writeln!(out, "  已显示 {n}/{} 条记录。", selected.len());
     }
     if let Some(ids) = &report.query_matches {
         let _ = writeln!(out, "Query matches: {}", ids.len());
@@ -368,9 +363,12 @@ pub fn terminal_with_raw(report: &AnalysisReport, limit: usize, tree: bool, raw:
     if limit != 0 && report.diagnostics.len() > limit {
         let _ = writeln!(
             out,
-            "Additional {} diagnostics in JSON/HTML.",
+            "其余 {} 条诊断已省略。",
             report.diagnostics.len() - limit
         );
+    }
+    if omitted_evidence || selected.len() > n || (limit != 0 && report.diagnostics.len() > limit) {
+        out.push_str("\n完整查看：-n 0 显示全部摘要；-R -n 0 显示全部引用及原始记录。JSON/HTML 保留完整证据。\n");
     }
     out.chars()
         .flat_map(|c| {
