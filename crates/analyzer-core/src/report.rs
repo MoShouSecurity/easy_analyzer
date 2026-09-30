@@ -53,6 +53,45 @@ pub fn terminal(report: &AnalysisReport, limit: usize, tree: bool) -> String {
     terminal_with_raw(report, limit, tree, false)
 }
 
+/// Add a compact overview while retaining the existing complete evidence schema.
+pub fn json(report: &AnalysisReport) -> anyhow::Result<String> {
+    let findings = ordered_findings(report, false);
+    let mut counts = [0; 5];
+    let mut evidence_ids = std::collections::HashSet::new();
+    let mut ai_count = 0;
+    for finding in &findings {
+        counts[finding.severity.rank() as usize] += 1;
+        evidence_ids.extend(finding.evidence_ids.iter());
+        ai_count += usize::from(finding.origin.starts_with("ai:"));
+    }
+    let errors = report
+        .diagnostics
+        .iter()
+        .filter(|d| d.level == DiagnosticLevel::Error)
+        .count();
+    let summary = serde_json::json!({
+        "sources": report.sources.len(), "records": report.records.len(),
+        "findings": findings.len(), "local_findings": findings.len() - ai_count, "ai_findings": ai_count,
+        "findings_by_severity": {"critical":counts[4],"high":counts[3],"medium":counts[2],"low":counts[1],"info":counts[0]},
+        "risk_summary": risk_summary(&findings),
+        "unique_referenced_records": evidence_ids.len(), "flows": report.flows.len(),
+        "diagnostics": {"errors":errors,"warnings":report.diagnostics.len()-errors},
+        "query_matches":report.query_matches.as_ref().map(Vec::len),
+        "priority_findings":findings.iter().take(5).map(|f| serde_json::json!({"id":f.id,"severity":f.severity,"title":f.title,"origin":f.origin,"evidence_count":f.evidence_ids.len(),"confidence":f.confidence})).collect::<Vec<_>>(),
+        "ai_coverage":report.ai_runs.iter().map(|r|serde_json::json!({"model":r.model,"complete":r.is_complete(),"completed_batches":r.completed(),"total_batches":r.batches,"analyzed_records":r.analyzed_records,"selected_records":r.selected()})).collect::<Vec<_>>()
+    });
+    #[derive(serde::Serialize)]
+    struct JsonReport<'a> {
+        summary: serde_json::Value,
+        #[serde(flatten)]
+        report: &'a AnalysisReport,
+    }
+    Ok(serde_json::to_string_pretty(&JsonReport {
+        summary,
+        report,
+    })?)
+}
+
 fn brief(text: &str) -> String {
     let mut result = String::new();
     let mut count = 0;
@@ -232,7 +271,13 @@ pub fn terminal_with_raw(report: &AnalysisReport, limit: usize, tree: bool, raw:
             run.selected()
         );
     }
-    for (index, s) in report.sources.iter().enumerate() {
+    for (index, s) in
+        report
+            .sources
+            .iter()
+            .enumerate()
+            .take(if limit == 0 { usize::MAX } else { limit })
+    {
         let _ = write!(
             out,
             "  来源 {} [{}] {} ({} bytes",
@@ -245,6 +290,13 @@ pub fn terminal_with_raw(report: &AnalysisReport, limit: usize, tree: bool, raw:
             let _ = write!(out, ", SHA256 {}", s.sha256);
         }
         out.push_str(")\n");
+    }
+    if limit != 0 && report.sources.len() > limit {
+        let _ = writeln!(
+            out,
+            "  其余 {} 个来源见 HTML/JSON 或 -n 0。",
+            report.sources.len() - limit
+        );
     }
     let source_numbers: std::collections::HashMap<_, _> = report
         .sources
@@ -289,6 +341,13 @@ pub fn terminal_with_raw(report: &AnalysisReport, limit: usize, tree: bool, raw:
         for id in &f.evidence_ids {
             record_findings.entry(id).or_default().push(f);
         }
+    }
+    let shown_findings = if limit == 0 {
+        findings.len()
+    } else {
+        limit.min(findings.len())
+    };
+    for f in findings.iter().take(shown_findings) {
         let ids: Vec<_> = f
             .evidence_ids
             .iter()
@@ -335,6 +394,9 @@ pub fn terminal_with_raw(report: &AnalysisReport, limit: usize, tree: bool, raw:
             ) || !f.origin.starts_with("local:")
             {
                 let _ = writeln!(out, "        {}", brief(&f.description));
+                if let Some(recommendation) = f.recommendations.first() {
+                    let _ = writeln!(out, "        建议：{}", brief(recommendation));
+                }
             }
             continue;
         }
@@ -363,10 +425,38 @@ pub fn terminal_with_raw(report: &AnalysisReport, limit: usize, tree: bool, raw:
             let _ = write!(out, "（另有 {} 条）", ids.len() - shown);
         }
         out.push('\n');
+        for recommendation in
+            f.recommendations
+                .iter()
+                .take(if limit == 0 { usize::MAX } else { limit })
+        {
+            let _ = writeln!(out, "    建议：{recommendation}");
+        }
+    }
+    if shown_findings < findings.len() {
+        let _ = writeln!(
+            out,
+            "\n  已显示 {shown_findings}/{} 项发现（风险优先），完整内容见 HTML/JSON 或 -n 0。",
+            findings.len()
+        );
     }
     if tree {
         out.push_str("\n进程树\n");
-        out.push_str(&process_tree(&report.records));
+        let process_tree = process_tree(&report.records);
+        let lines = process_tree.lines().count();
+        for line in process_tree
+            .lines()
+            .take(if limit == 0 { usize::MAX } else { limit })
+        {
+            let _ = writeln!(out, "{line}");
+        }
+        if limit != 0 && lines > limit {
+            let _ = writeln!(
+                out,
+                "  其余 {} 行进程关系见 HTML/JSON 或 -n 0。",
+                lines - limit
+            );
+        }
     }
     out.push_str(if raw {
         "\n记录详情\n"
@@ -382,7 +472,7 @@ pub fn terminal_with_raw(report: &AnalysisReport, limit: usize, tree: bool, raw:
                 .is_none_or(|ids| ids.contains(r.id.as_str()))
         })
         .collect();
-    if matches.is_some() {
+    if !record_findings.is_empty() {
         selected.sort_by_key(|r| {
             std::cmp::Reverse(
                 record_findings
@@ -439,25 +529,47 @@ pub fn terminal_with_raw(report: &AnalysisReport, limit: usize, tree: bool, raw:
     if selected.len() > n {
         let _ = writeln!(out, "  已显示 {n}/{} 条记录。", selected.len());
     }
-    for d in report
-        .diagnostics
-        .iter()
+    let mut diagnostics: std::collections::BTreeMap<(u8, &str, &str), (usize, &Diagnostic)> =
+        std::collections::BTreeMap::new();
+    for diagnostic in &report.diagnostics {
+        let key = (
+            u8::from(diagnostic.level != DiagnosticLevel::Error),
+            diagnostic.source.as_str(),
+            diagnostic.message.as_str(),
+        );
+        let group = diagnostics.entry(key).or_insert((0, diagnostic));
+        group.0 += 1;
+    }
+    if !diagnostics.is_empty() {
+        out.push_str("\n诊断（相同提示合并，错误优先）\n");
+    }
+    for (count, d) in diagnostics
+        .values()
         .take(if limit == 0 { usize::MAX } else { limit })
     {
         let _ = writeln!(
             out,
-            "{:?} {} {}: {}",
-            d.level,
+            "  [{}] {} {}: {}（{} 次）",
+            if d.level == DiagnosticLevel::Error {
+                "错误"
+            } else {
+                "提醒"
+            },
             d.source,
             d.position.as_deref().unwrap_or(""),
-            d.message
+            if raw {
+                d.message.clone()
+            } else {
+                brief(&d.message)
+            },
+            count
         );
     }
-    if limit != 0 && report.diagnostics.len() > limit {
+    if limit != 0 && diagnostics.len() > limit {
         let _ = writeln!(
             out,
-            "其余 {} 条诊断已省略。",
-            report.diagnostics.len() - limit
+            "其余 {} 类诊断已省略；完整内容见 HTML/JSON。",
+            diagnostics.len() - limit
         );
     }
     if !raw && (!findings.is_empty() || !selected.is_empty()) {
@@ -488,225 +600,9 @@ pub fn escape(s: &str) -> String {
 fn pre(s: &str) -> String {
     format!("<pre>{}</pre>", escape(s))
 }
-fn html_findings(out: &mut String, findings: &[&Finding]) {
-    for f in findings {
-        let sev = serde_json::to_value(&f.severity).unwrap();
-        let _ = write!(
-            out,
-            "<article class=\"{}\"><h3>[{}] {}</h3><small>{} · 置信度 {:.2}</small><p>{}</p><p>证据：",
-            sev.as_str().unwrap(),
-            f.severity.label(),
-            escape(&f.title),
-            escape(&f.origin),
-            f.confidence,
-            escape(&f.description)
-        );
-        for id in &f.evidence_ids {
-            let _ = write!(out, "<a href=\"#{}\">{}</a> ", escape(id), escape(id));
-        }
-        out.push_str("</p><ul>");
-        for recommendation in &f.recommendations {
-            let _ = write!(out, "<li>{}</li>", escape(recommendation));
-        }
-        out.push_str("</ul></article>");
-    }
-}
-pub fn html(report: &AnalysisReport) -> String {
-    let mut out = String::from(
-        r#"<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; base-uri 'none'; form-action 'none'"><title>Easy Analyzer 应急响应报告</title><style>
-body{font:15px/1.65 system-ui,sans-serif;color:#203046;background:#edf2f6;margin:0}main{max-width:1280px;margin:auto;padding:32px}h1{font-size:30px}h2{margin-top:32px}section,article{background:white;border:1px solid #dce4ec;border-radius:12px;padding:20px;margin:14px 0}table{width:100%;border-collapse:collapse;text-align:left}td,th{padding:10px;border-bottom:1px solid #e2e8f0;vertical-align:top;overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.6 ui-monospace,monospace;background:#f4f7fa;padding:12px}a{color:#17649b}small{color:#607188}.high,.critical{border-left:5px solid #c74848}.medium{border-left:5px solid #d79928}.low,.info{border-left:5px solid #3187b3}details{margin:10px 0}summary{cursor:pointer}code{overflow-wrap:anywhere}@media print{body{background:white}main{padding:0}article,section{break-inside:avoid}}
-</style></head><body><main><h1>Easy Analyzer · 应急响应报告</h1>"#,
-    );
-    let _ = write!(
-        out,
-        "<p>{} · Schema {}</p><section><strong>{} 个来源 / {} 条记录 / {} 项发现 / {} 个会话 / {} 条诊断</strong><p>分析结果用于线索核查；原始证据及对应来源哈希可在下方查看。</p></section>",
-        escape(&report.generated_at),
-        report.schema_version,
-        report.sources.len(),
-        report.records.len(),
-        report.findings.len(),
-        report.flows.len(),
-        report.diagnostics.len()
-    );
-    out.push_str("<h2>证据来源</h2><section><table><tr><th>来源</th><th>格式 / 大小</th><th>SHA256 / 采集时间</th></tr>");
-    for s in &report.sources {
-        let _ = write!(
-            out,
-            "<tr><td>{}</td><td>{} / {}</td><td><code>{}</code><br>{}</td></tr>",
-            escape(&s.path),
-            escape(&s.format),
-            s.bytes,
-            escape(&s.sha256),
-            escape(&s.collected_at)
-        );
-    }
-    out.push_str("</table></section>");
-    out.push_str("<h2>分析发现</h2>");
-    let findings = ordered_findings(report, false);
-    let _ = write!(
-        out,
-        "<section>{}（分析发现项数）</section>",
-        risk_summary(&findings)
-    );
-    if report.findings.is_empty() {
-        out.push_str("<section>未产生分析发现。未发现规则匹配不能证明主机安全。</section>");
-    }
-    let (ai_findings, local_findings): (Vec<_>, Vec<_>) = findings
-        .into_iter()
-        .partition(|finding| finding.origin.starts_with("ai:"));
-    out.push_str("<h2>本地规则分析</h2>");
-    if local_findings.is_empty() {
-        out.push_str("<section>本地规则未产生发现。</section>");
-    }
-    html_findings(&mut out, &local_findings);
-    if !report.ai_runs.is_empty()
-        || !ai_findings.is_empty()
-        || report.diagnostics.iter().any(|d| d.source == "AI")
-    {
-        out.push_str("<h2>AI 分析</h2><section>");
-        if report.ai_runs.is_empty() && ai_findings.is_empty() {
-            out.push_str("<p>AI 未生成可用结果，具体原因见诊断信息。</p>");
-        }
-        for run in &report.ai_runs {
-            let _ = write!(
-                out,
-                "<p><strong>{}</strong> · {} · {}</p><p>已完成 {}/{} 批次，已验证 {}/{} 条记录；未完成批次不计入结论。包含载荷：{}</p>",
-                if run.is_complete() {
-                    "分析完成"
-                } else {
-                    "分析未完成（已完成结果已保留）"
-                },
-                escape(&run.model),
-                escape(&run.endpoint),
-                run.completed(),
-                run.batches,
-                run.analyzed_records,
-                run.selected(),
-                run.include_payload
-            );
-        }
-        let _ = write!(
-            out,
-            "<p>AI 发现 {} 项。{}</p>",
-            ai_findings.len(),
-            if ai_findings.is_empty() {
-                "已验证批次未产生可用发现；不代表全部证据均已分析或没有风险。"
-            } else {
-                "以下只展示通过结构和证据引用校验的结果。"
-            }
-        );
-        out.push_str("</section>");
-        html_findings(&mut out, &ai_findings);
-        for run in &report.ai_runs {
-            if !run.batch_results.is_empty() {
-                out.push_str("<section><details><summary>AI 各批次原始回复与诊断</summary><p>未通过校验的回复仅供排查，不作为分析结论。</p>");
-                for batch in &run.batch_results {
-                    let _ = write!(
-                        out,
-                        "<details><summary>第 {}/{} 批 · {} · {} 条记录 · 请求 {} 次</summary>",
-                        batch.index,
-                        run.batches,
-                        if batch.error.is_none() {
-                            "已验证"
-                        } else {
-                            "失败"
-                        },
-                        batch.evidence_ids.len(),
-                        batch.attempts.len()
-                    );
-                    if let Some(error) = &batch.error {
-                        let _ = write!(out, "<p>{}</p>", escape(error));
-                    }
-                    for (index, attempt) in batch.attempts.iter().enumerate() {
-                        let _ = write!(
-                            out,
-                            "<details><summary>第 {} 次回复 · {}</summary>",
-                            index + 1,
-                            if attempt.error.is_none() {
-                                "已验证"
-                            } else {
-                                "未通过校验或请求失败"
-                            }
-                        );
-                        if let Some(error) = &attempt.error {
-                            let _ = write!(out, "<p>{}</p>", escape(error));
-                        }
-                        if let Some(response) = &attempt.response {
-                            out.push_str(&pre(response));
-                        }
-                        out.push_str("</details>");
-                    }
-                    out.push_str("</details>");
-                }
-                out.push_str("</details></section>");
-            }
-        }
-    }
-    let tree = process_tree(&report.records);
-    if !tree.is_empty() {
-        out.push_str("<h2>进程关系</h2><section>");
-        out.push_str(&pre(&tree));
-        out.push_str("</section>");
-    }
-    if !report.flows.is_empty() {
-        out.push_str("<h2>网络会话</h2><section><table><tr><th>端点</th><th>协议</th><th>包 / 字节</th><th>时间</th></tr>");
-        for f in &report.flows {
-            let _ = write!(
-                out,
-                "<tr><td>{}<br>{}</td><td>{}</td><td>{} / {}</td><td>{}<br>{}</td></tr>",
-                escape(&f.endpoint_a),
-                escape(&f.endpoint_b),
-                escape(&f.protocol),
-                f.packets,
-                f.bytes,
-                escape(f.first_seen.as_deref().unwrap_or("未知")),
-                escape(f.last_seen.as_deref().unwrap_or("未知"))
-            );
-        }
-        out.push_str("</table></section>");
-    }
-    if let Some(ids) = &report.query_matches {
-        let _ = write!(out, "<h2>查询匹配：{} 条</h2><section>", ids.len());
-        for id in ids {
-            let _ = write!(out, "<p><a href=\"#{}\">{}</a></p>", escape(id), escape(id));
-        }
-        out.push_str("</section>");
-    }
-    if !report.diagnostics.is_empty() {
-        out.push_str("<h2>解析、采集与 AI 诊断</h2><section><ul>");
-        for d in &report.diagnostics {
-            let _ = write!(
-                out,
-                "<li>{} {}：{}</li>",
-                escape(&d.source),
-                escape(d.position.as_deref().unwrap_or("")),
-                escape(&d.message)
-            );
-        }
-        out.push_str("</ul></section>");
-    }
-    out.push_str("<h2>全部证据记录</h2><section>");
-    for r in &report.records {
-        let _ = write!(
-            out,
-            "<details id=\"{}\"><summary>{} · {} · {:?}</summary><p>来源 ID：{} · {}</p>",
-            escape(&r.id),
-            escape(&r.position),
-            escape(r.timestamp.as_deref().unwrap_or("时间未知")),
-            r.status,
-            escape(&r.source_id),
-            escape(&r.id)
-        );
-        out.push_str(&pre(
-            &serde_json::to_string_pretty(&r.data).unwrap_or_default()
-        ));
-        out.push_str("<strong>原始记录（文本 / JSON / 十六进制）</strong>");
-        out.push_str(&pre(&r.raw));
-        out.push_str("</details>");
-    }
-    out.push_str("</section></main></body></html>");
-    out
-}
+mod html;
+pub use html::render as html;
+
 #[cfg(test)]
 mod tests {
     use super::*;

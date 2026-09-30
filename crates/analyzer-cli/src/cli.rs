@@ -230,7 +230,7 @@ pub struct CommonArgs {
         default_value_t = 50,
         value_name = "N",
         help_heading = "报告输出",
-        help = "终端记录、诊断及详情证据引用上限；0 显示全部，不裁剪 JSON/HTML"
+        help = "终端各区来源、发现、记录、进程树、诊断及详情引用上限；0 显示全部，不裁剪 JSON/HTML"
     )]
     limit: usize,
     #[arg(

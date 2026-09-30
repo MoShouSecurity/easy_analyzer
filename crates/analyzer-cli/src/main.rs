@@ -346,7 +346,7 @@ fn run(cli: Cli) -> Result<bool> {
         .findings
         .sort_by_key(|f| std::cmp::Reverse(f.severity.rank()));
     let json = if matches!(args.output, Output::Json) || args.json_out.is_some() {
-        Some(serde_json::to_string_pretty(&report)?)
+        Some(report::json(&report)?)
     } else {
         None
     };
