@@ -1,3 +1,4 @@
+use crate::execution::{ExecutionContext, Stage};
 use crate::model::*;
 use anyhow::Result;
 use chrono::DateTime;
@@ -8,21 +9,35 @@ mod default_logs;
 type LoginKey = (String, String, String, String);
 
 pub fn query(records: &[Record], expression: &str, regex: bool) -> Result<Vec<String>> {
+    query_with_context(records, expression, regex, &ExecutionContext::default())
+}
+
+pub fn query_with_context(
+    records: &[Record],
+    expression: &str,
+    regex: bool,
+    ctx: &ExecutionContext,
+) -> Result<Vec<String>> {
     let pattern = if regex {
         expression.to_owned()
     } else {
         regex::escape(expression)
     };
     let search = RegexBuilder::new(&pattern).case_insensitive(true).build()?;
-    Ok(records
-        .iter()
-        .filter(|r| {
-            search.is_match(&r.raw)
-                || search.is_match(&serde_json::to_string(&r.data).unwrap_or_default())
-        })
-        .map(|r| r.id.clone())
-        .collect())
+    let mut matches = vec![];
+    for (i, record) in records.iter().enumerate() {
+        ctx.tick(Stage::Query, None, i, Some(records.len()))?;
+        if search.is_match(&record.raw)
+            || search.is_match(&serde_json::to_string(&record.data).unwrap_or_default())
+        {
+            matches.push(record.id.clone());
+        }
+    }
+    ctx.emit(Stage::Query, None, records.len(), Some(records.len()));
+    ctx.check()?;
+    Ok(matches)
 }
+
 fn finding(
     rule: &str,
     severity: Severity,
@@ -66,8 +81,14 @@ fn decoded(s: &str) -> String {
     out.to_lowercase()
 }
 pub fn analyze(report: &mut AnalysisReport) {
+    analyze_with_context(report, &ExecutionContext::default()).expect("uncancelled rules");
+}
+
+pub fn analyze_with_context(report: &mut AnalysisReport, ctx: &ExecutionContext) -> Result<()> {
+    ctx.emit(Stage::Rules, None, 0, Some(report.records.len()));
+    ctx.check()?;
     report.findings.retain(|f| !f.origin.starts_with("local:"));
-    default_logs::analyze(report);
+    default_logs::analyze(report, ctx)?;
     let web=Regex::new(r"(?i)(?:\.\./|/etc/passwd|/proc/self|union\s+(?:all\s+)?select|<script|\$\{|;\s*(?:curl|wget|bash)|/\.env(?:\?|$)|/\.git/)").unwrap();
     let command=Regex::new(r"(?i)(?:-(?:enc|encodedcommand)\b|frombase64string|(?:curl|wget)\b.*\|\s*(?:sh|bash)|/dev/tcp/)").unwrap();
     let processes: BTreeMap<_, _> = report
@@ -83,7 +104,8 @@ pub fn analyze(report: &mut AnalysisReport) {
         .collect();
     let mut failures: BTreeMap<LoginKey, Vec<&Record>> = BTreeMap::new();
     let mut successes: BTreeMap<LoginKey, Vec<&Record>> = BTreeMap::new();
-    for r in &report.records {
+    for (i, r) in report.records.iter().enumerate() {
+        ctx.tick(Stage::Rules, None, i, Some(report.records.len()))?;
         if r.status != ParseStatus::Parsed {
             continue;
         }
@@ -185,6 +207,7 @@ pub fn analyze(report: &mut AnalysisReport) {
         }
     }
     for ((source, host, ip, user), mut records) in failures {
+        ctx.check()?;
         if ip.is_empty() || ip == "-" {
             continue;
         }
@@ -206,6 +229,7 @@ pub fn analyze(report: &mut AnalysisReport) {
         let mut suspicious = vec![];
         let mut left = 0;
         for right in 0..timed.len() {
+            ctx.check()?;
             while timed[right].1 - timed[left].1 > 300 {
                 left += 1;
             }
@@ -245,6 +269,7 @@ pub fn analyze(report: &mut AnalysisReport) {
             .into_iter()
             .flatten()
         {
+            ctx.check()?;
             let Some(t) = success
                 .timestamp
                 .as_deref()
@@ -273,10 +298,17 @@ pub fn analyze(report: &mut AnalysisReport) {
             }
         }
     }
-    report.flows = crate::network::flows(&report.records);
+    report.flows = crate::network::flows_with_context(&report.records, ctx)?;
     report
         .findings
         .sort_by_key(|f| std::cmp::Reverse(f.severity.rank()));
+    ctx.emit(
+        Stage::Rules,
+        None,
+        report.records.len(),
+        Some(report.records.len()),
+    );
+    ctx.check()
 }
 #[cfg(test)]
 mod tests {

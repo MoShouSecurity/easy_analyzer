@@ -1,4 +1,5 @@
 //! Bounded, endian-aware PCAP/PCAPNG and basic IP transport decoding.
+use crate::execution::{ExecutionContext, Stage};
 use crate::{ingest::make_record, model::*};
 use anyhow::{Result, bail};
 use chrono::DateTime;
@@ -39,6 +40,17 @@ fn time(seconds: i64, nanos: u32) -> Option<String> {
 }
 
 pub fn parse_capture(b: &[u8], s: &Source, max: usize, r: &mut AnalysisReport) -> Result<()> {
+    parse_capture_with_context(b, s, max, r, &ExecutionContext::default())
+}
+
+pub fn parse_capture_with_context(
+    b: &[u8],
+    s: &Source,
+    max: usize,
+    r: &mut AnalysisReport,
+    ctx: &ExecutionContext,
+) -> Result<()> {
+    ctx.check()?;
     if b.is_empty() {
         r.warn(&s.path, None, "empty capture");
         return Ok(());
@@ -47,7 +59,7 @@ pub fn parse_capture(b: &[u8], s: &Source, max: usize, r: &mut AnalysisReport) -
         bail!("invalid PCAP/PCAPNG magic");
     }
     if b.starts_with(&[0x0a, 0x0d, 0x0d, 0x0a]) {
-        return parse_ng(b, s, max, r);
+        return parse_ng(b, s, max, r, ctx);
     }
     if b.len() < 24 {
         bail!("truncated PCAP global header");
@@ -60,6 +72,7 @@ pub fn parse_capture(b: &[u8], s: &Source, max: usize, r: &mut AnalysisReport) -
     let link = u32_at(b, 20, le) & 0xffff;
     let mut p = 24;
     while p < b.len() {
+        ctx.tick(Stage::Parsing, Some(&s.path), r.records.len(), None)?;
         if r.records.len() >= max {
             bail!("capture exceeds max records ({max})");
         }
@@ -101,11 +114,18 @@ struct Interface {
     snaplen: u32,
     offset: i64,
 }
-fn parse_ng(b: &[u8], s: &Source, max: usize, r: &mut AnalysisReport) -> Result<()> {
+fn parse_ng(
+    b: &[u8],
+    s: &Source,
+    max: usize,
+    r: &mut AnalysisReport,
+    ctx: &ExecutionContext,
+) -> Result<()> {
     let mut p = 0;
     let mut le = true;
     let mut interfaces: Vec<Interface> = vec![];
     while p < b.len() {
+        ctx.tick(Stage::Parsing, Some(&s.path), r.records.len(), None)?;
         if b.len() - p < 12 {
             malformed(s, p, &b[p..], "truncated PCAPNG block", r);
             break;
@@ -543,8 +563,13 @@ fn dns_name(b: &[u8], mut p: usize) -> Option<String> {
     None
 }
 pub fn flows(records: &[Record]) -> Vec<NetworkFlow> {
+    flows_with_context(records, &ExecutionContext::default()).expect("uncancelled flow aggregation")
+}
+
+pub fn flows_with_context(records: &[Record], ctx: &ExecutionContext) -> Result<Vec<NetworkFlow>> {
     let mut flows: BTreeMap<(String, String, String, String), NetworkFlow> = BTreeMap::new();
-    for record in records {
+    for (i, record) in records.iter().enumerate() {
+        ctx.tick(Stage::Flows, None, i, Some(records.len()))?;
         let RecordData::Packet(p) = &record.data else {
             continue;
         };
@@ -593,7 +618,7 @@ pub fn flows(records: &[Record]) -> Vec<NetworkFlow> {
             }
         }
     }
-    flows.into_values().collect()
+    Ok(flows.into_values().collect())
 }
 
 #[cfg(test)]

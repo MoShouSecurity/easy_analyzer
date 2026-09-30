@@ -96,7 +96,13 @@ AI 回复未通过 JSON 或证据校验时，当前批次最多重试两次；�
 
 macOS 请手动导入离线日志，`-l` 仅适用于 Windows/Linux；utmp/wtmp/btmp 支持 Linux glibc x64 常见布局。当前不支持实时抓包、TCP 重组或 TLS 解密，GUI 后续开发。
 
+Ctrl+C 可请求取消分析，保留已完成证据并尝试输出报告；已发送的 AI 请求等待返回或超时，再停止后续批次。
+
 更多说明：[默认日志规则](docs/DEFAULT_RULES.md) · [macOS 使用指南](docs/MACOS.md)
+
+## 架构
+
+`analyzer-cli → analyzer-app → analyzer-core`：命令行负责交互，应用层统一分析流程、会话、分页、任务和配置/导出，核心负责解析、规则、AI 与报告编码。未来 GUI 直接复用应用层，详见[架构与接口](docs/ARCHITECTURE.md)。
 
 ## 构建
 

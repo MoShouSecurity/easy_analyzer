@@ -135,7 +135,7 @@ fn log_field<'a>(log: &'a LogData, names: &[&str]) -> Option<&'a str> {
             .filter(|value| !value.is_empty() && *value != "-")
     })
 }
-fn record_summary(record: &Record) -> String {
+pub fn record_summary(record: &Record) -> String {
     match &record.data {
         RecordData::Log(log) => {
             let fields: &[(&str, &[&str])] = if log.category == "windows_event" {

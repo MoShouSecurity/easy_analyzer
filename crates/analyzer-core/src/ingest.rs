@@ -1,4 +1,5 @@
 use crate::{
+    execution::{ExecutionContext, ReportOutcome, Stage, is_cancelled},
     model::*,
     web::{WebErrorParser, WebParser},
 };
@@ -98,60 +99,141 @@ pub fn make_record(
 }
 
 pub fn ingest_file(path: &Path, options: &IngestOptions) -> Result<AnalysisReport> {
+    Ok(ingest_file_with_context(path, options, &ExecutionContext::default())?.report)
+}
+
+pub fn ingest_file_with_context(
+    path: &Path,
+    options: &IngestOptions,
+    ctx: &ExecutionContext,
+) -> Result<ReportOutcome> {
     if options.max_file_bytes == 0 || options.max_records == 0 {
         bail!("input limits must be positive");
     }
-    let file = File::open(path).with_context(|| format!("cannot open {}", path.display()))?;
-    let mut bytes = Vec::new();
-    file.take(options.max_file_bytes.saturating_add(1))
-        .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > options.max_file_bytes {
-        bail!(
-            "{} exceeds the file size limit ({} bytes)",
-            path.display(),
-            options.max_file_bytes
-        );
+    let label = path.to_string_lossy();
+    if ctx.cancellation.is_cancelled() {
+        return Ok(ReportOutcome::cancelled(AnalysisReport::default(), &label));
     }
-    ingest_bytes(&path.to_string_lossy(), &bytes, options)
+    let file = File::open(path).with_context(|| format!("cannot open {}", path.display()))?;
+    let total = file
+        .metadata()
+        .ok()
+        .and_then(|m| usize::try_from(m.len()).ok());
+    let mut reader = file.take(options.max_file_bytes.saturating_add(1));
+    let mut bytes = Vec::new();
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        ctx.emit(Stage::Reading, Some(&label), bytes.len(), total);
+        if ctx.cancellation.is_cancelled() {
+            return Ok(ReportOutcome::cancelled(AnalysisReport::default(), &label));
+        }
+        let n = reader.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buffer[..n]);
+    }
+    ingest_bytes_with_context(&label, &bytes, options, ctx)
 }
 
-/// Shared input API for CLI stdin and future GUI drag/drop or pasted text.
+/// Shared input API for CLI stdin and GUI drag/drop or pasted text.
 pub fn ingest_bytes(label: &str, bytes: &[u8], options: &IngestOptions) -> Result<AnalysisReport> {
+    Ok(ingest_bytes_with_context(label, bytes, options, &ExecutionContext::default())?.report)
+}
+
+pub fn ingest_bytes_with_context(
+    label: &str,
+    bytes: &[u8],
+    options: &IngestOptions,
+    ctx: &ExecutionContext,
+) -> Result<ReportOutcome> {
     if bytes.len() as u64 > options.max_file_bytes || options.max_records == 0 {
         bail!("input exceeds configured limits");
+    }
+    if ctx.cancellation.is_cancelled() {
+        return Ok(ReportOutcome::cancelled(AnalysisReport::default(), label));
     }
     if bytes.starts_with(&[0x1f, 0x8b]) {
         bail!("gzip input must be decompressed before import");
     }
-    let path = Path::new(label);
     let mut format = if options.format == InputFormat::Auto {
-        detect(path, bytes)?
+        detect(Path::new(label), bytes)?
     } else {
         options.format
     };
     if options.web_format.is_some() && matches!(format, InputFormat::Text | InputFormat::Web) {
         format = InputFormat::Web;
     }
-    let source = source_for(label, &format.to_string(), bytes);
-    let mut report = AnalysisReport::default();
-    match format {
-        InputFormat::Evtx => parse_evtx(bytes, &source, options.max_records, &mut report)?,
-        InputFormat::Utmp | InputFormat::Wtmp | InputFormat::Btmp => {
-            parse_utmp(bytes, &source, format, options.max_records, &mut report)?
+    let mut digest = Sha256::new();
+    for (i, chunk) in bytes.chunks(64 * 1024).enumerate() {
+        ctx.emit(
+            Stage::Hashing,
+            Some(label),
+            i * 64 * 1024,
+            Some(bytes.len()),
+        );
+        if ctx.cancellation.is_cancelled() {
+            return Ok(ReportOutcome::cancelled(AnalysisReport::default(), label));
         }
-        InputFormat::Processes => {
-            parse_processes(bytes, &source, options.max_records, &mut report)?
-        }
-        InputFormat::Pcap => {
-            crate::network::parse_capture(bytes, &source, options.max_records, &mut report)?
-        }
-        InputFormat::Web | InputFormat::Text => {
-            parse_text(bytes, &source, format, options, &mut report)?
-        }
-        InputFormat::Auto => unreachable!(),
+        digest.update(chunk);
     }
+    let sha256 = hex(&digest.finalize());
+    let source = Source {
+        id: hex(&Sha256::digest(format!("{label}\0{sha256}").as_bytes())),
+        path: label.into(),
+        format: format.to_string(),
+        sha256,
+        bytes: bytes.len() as u64,
+        collected_at: Utc::now().to_rfc3339(),
+    };
+    let mut report = AnalysisReport::default();
+    ctx.emit(Stage::Parsing, Some(label), 0, None);
+    let parsed = (|| {
+        ctx.check()?;
+        match format {
+            InputFormat::Evtx => parse_evtx(bytes, &source, options.max_records, &mut report, ctx),
+            InputFormat::Utmp | InputFormat::Wtmp | InputFormat::Btmp => parse_utmp(
+                bytes,
+                &source,
+                format,
+                options.max_records,
+                &mut report,
+                ctx,
+            ),
+            InputFormat::Processes => {
+                parse_processes(bytes, &source, options.max_records, &mut report, ctx)
+            }
+            InputFormat::Pcap => crate::network::parse_capture_with_context(
+                bytes,
+                &source,
+                options.max_records,
+                &mut report,
+                ctx,
+            ),
+            InputFormat::Web | InputFormat::Text => {
+                parse_text(bytes, &source, format, options, &mut report, ctx)
+            }
+            InputFormat::Auto => unreachable!(),
+        }
+    })();
     report.sources.push(source);
-    Ok(report)
+    match parsed {
+        Err(error) if is_cancelled(&error) => Ok(ReportOutcome::cancelled(report, label)),
+        Err(error) => Err(error),
+        Ok(()) => {
+            ctx.emit(
+                Stage::Parsing,
+                Some(label),
+                report.records.len(),
+                Some(report.records.len()),
+            );
+            if ctx.cancellation.is_cancelled() {
+                Ok(ReportOutcome::cancelled(report, label))
+            } else {
+                Ok(ReportOutcome::complete(report))
+            }
+        }
+    }
 }
 
 fn detect(path: &Path, bytes: &[u8]) -> Result<InputFormat> {
@@ -209,10 +291,12 @@ fn parse_evtx(
     source: &Source,
     max: usize,
     report: &mut AnalysisReport,
+    ctx: &ExecutionContext,
 ) -> Result<()> {
     let mut parser =
         evtx::EvtxParser::from_buffer(bytes.to_vec()).context("invalid EVTX header")?;
     for (i, event) in parser.records_json_value().enumerate() {
+        ctx.tick(Stage::Parsing, Some(&source.path), i, None)?;
         if i >= max {
             bail!("EVTX exceeds max records ({max}); increase --max-records");
         }
@@ -297,12 +381,19 @@ fn parse_utmp(
     format: InputFormat,
     max: usize,
     report: &mut AnalysisReport,
+    ctx: &ExecutionContext,
 ) -> Result<()> {
     // Linux glibc x86_64-compatible layout. Explicit little endian; never transmute host ABI.
     if bytes.len() / 384 > max {
         bail!("login file exceeds max records ({max})");
     }
     for (i, chunk) in bytes.chunks(384).enumerate() {
+        ctx.tick(
+            Stage::Parsing,
+            Some(&source.path),
+            i,
+            Some(bytes.len() / 384),
+        )?;
         let offset = i * 384;
         if chunk.len() != 384 {
             report.warn(
@@ -397,6 +488,7 @@ fn parse_text(
     format: InputFormat,
     opts: &IngestOptions,
     report: &mut AnalysisReport,
+    ctx: &ExecutionContext,
 ) -> Result<()> {
     let text = String::from_utf8_lossy(bytes);
     if std::str::from_utf8(bytes).is_err() {
@@ -419,6 +511,7 @@ fn parse_text(
     let accepted = Regex::new(r"(?i)Accepted \S+ for (\S+) from (\S+)")?;
     let invalid = Regex::new(r"(?i)Invalid user (\S+) from (\S+)")?;
     for (i, line) in text.lines().enumerate() {
+        ctx.tick(Stage::Parsing, Some(&source.path), i, None)?;
         if i >= opts.max_records {
             bail!(
                 "text exceeds max records ({}); increase --max-records",
@@ -504,6 +597,7 @@ fn parse_processes(
     source: &Source,
     max: usize,
     report: &mut AnalysisReport,
+    ctx: &ExecutionContext,
 ) -> Result<()> {
     let value: serde_json::Value =
         serde_json::from_slice(bytes).context("invalid process snapshot JSON")?;
@@ -535,6 +629,10 @@ fn parse_processes(
     let mut groups = BTreeMap::new();
     let mut pids = std::collections::HashSet::new();
     for (i, (original_group, timestamp, raw, process)) in processes.into_iter().enumerate() {
+        if let Err(error) = ctx.tick(Stage::Parsing, Some(&source.path), i, None) {
+            report.sources.extend(groups.into_values());
+            return Err(error);
+        }
         // Namespace report snapshots by their original source; never connect PIDs across hosts.
         let record_source = if let Some(original) = original_group {
             let group = groups.entry(original.clone()).or_insert_with(|| {
@@ -581,7 +679,15 @@ mod tests {
         bytes.extend([1, 2]);
         let source = source_for("wtmp", "wtmp", &bytes);
         let mut r = AnalysisReport::default();
-        parse_utmp(&bytes, &source, InputFormat::Wtmp, 10, &mut r).unwrap();
+        parse_utmp(
+            &bytes,
+            &source,
+            InputFormat::Wtmp,
+            10,
+            &mut r,
+            &ExecutionContext::default(),
+        )
+        .unwrap();
         assert_eq!(r.records.len(), 2);
         assert_eq!(r.records[1].status, ParseStatus::Malformed);
         if let RecordData::Log(l) = &r.records[0].data {

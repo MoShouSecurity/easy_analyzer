@@ -28,7 +28,7 @@ codesign --force --sign - "$STAGED_PACKAGE/easy-analyzer"
 codesign --verify --strict "$STAGED_PACKAGE/easy-analyzer"
 lipo "$STAGED_PACKAGE/easy-analyzer" -verify_arch arm64
 cp README.md LICENSE CHANGELOG.md "$STAGED_PACKAGE/"
-cp docs/MACOS.md docs/VALIDATION.md docs/DEFAULT_RULES.md "$STAGED_PACKAGE/docs/"
+cp docs/MACOS.md docs/VALIDATION.md docs/DEFAULT_RULES.md docs/ARCHITECTURE.md "$STAGED_PACKAGE/docs/"
 sed 's|](DEFAULT_RULES.md)|](docs/DEFAULT_RULES.md)|g' docs/MACOS.md > "$STAGED_PACKAGE/开始使用.md"
 cp -R tests/fixtures "$STAGED_PACKAGE/samples"
 cp tools/macos-demo.command "$STAGED_PACKAGE/演示.command"

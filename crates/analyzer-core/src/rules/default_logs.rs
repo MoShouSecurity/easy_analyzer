@@ -1,5 +1,6 @@
 //! Default triage rules. Findings describe evidence to review, not a verdict.
 use super::{decoded, finding};
+use crate::execution::{ExecutionContext, Stage};
 use crate::model::*;
 use regex::Regex;
 use std::{collections::BTreeMap, sync::OnceLock};
@@ -574,10 +575,11 @@ fn rules() -> &'static [Rule] {
     })
 }
 
-pub(super) fn analyze(report: &mut AnalysisReport) {
+pub(super) fn analyze(report: &mut AnalysisReport, ctx: &ExecutionContext) -> anyhow::Result<()> {
     // Aggregate by rule and source to avoid one finding per routine 401/failure.
     let mut matches: BTreeMap<(usize, &str), Vec<&Record>> = BTreeMap::new();
-    for record in &report.records {
+    for (i, record) in report.records.iter().enumerate() {
+        ctx.tick(Stage::Rules, None, i, Some(report.records.len()))?;
         if record.status == ParseStatus::Malformed {
             continue;
         }
@@ -601,6 +603,7 @@ pub(super) fn analyze(report: &mut AnalysisReport) {
         }
     }
     for ((index, _), records) in matches {
+        ctx.check()?;
         let rule = &rules()[index];
         let mut f = finding(
             rule.id,
@@ -621,4 +624,5 @@ pub(super) fn analyze(report: &mut AnalysisReport) {
         f.recommendations = vec![rule.advice.into()];
         report.findings.push(f);
     }
+    Ok(())
 }

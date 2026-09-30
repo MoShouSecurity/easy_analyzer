@@ -1,5 +1,12 @@
 # 项目约定
 
+## 架构
+
+- 依赖方向为 `analyzer-cli / 未来 analyzer-gui → analyzer-app → analyzer-core`。CLI 不直接依赖 core；共享模型通过 app 的导出接口访问。
+- 分析编排、范围选择、会话、配置保存与导出校验放在 app；解析器、规则、AI 协议和报告编码放在 core。前端负责参数/控件、标准输入输出及进度展示。
+- app/core 不依赖 CLI 或 GUI 框架、不打印终端；新增耗时循环接入执行上下文。任务取消保留有效证据、有效 AI 结果和未完成诊断。
+- 保持报告 schema 和已有 core 公开入口兼容；GUI 使用会话分页与后台任务，不复制整套 CLI 流程。接口说明见 `docs/ARCHITECTURE.md`。
+
 ## Git 与发布
 
 - 日常修改只提交源码；用户要求同步 GitHub 时推送分支，不创建或推送发布标签，也不手动启动发布 Actions。

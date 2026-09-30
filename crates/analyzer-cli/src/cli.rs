@@ -1,4 +1,4 @@
-use analyzer_core::InputFormat;
+use analyzer_app::InputFormat;
 use clap::{
     Arg, ArgAction, ArgGroup, Args, CommandFactory, Parser, Subcommand, ValueEnum,
     builder::{PossibleValuesParser, TypedValueParser},

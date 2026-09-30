@@ -1,3 +1,4 @@
+use crate::execution::{ExecutionContext, ProgressEvent, Stage};
 use crate::model::*;
 use anyhow::{Context, Result, bail};
 use reqwest::{Url, blocking::Client, redirect::Policy};
@@ -188,15 +189,31 @@ struct TextEvidence {
     text: String,
 }
 
+#[cfg(test)]
 fn batches(
     records: &[&Record],
     include_payload: bool,
     limit: usize,
 ) -> Result<Vec<Vec<TextEvidence>>> {
+    batches_with_context(
+        records,
+        include_payload,
+        limit,
+        &ExecutionContext::default(),
+    )
+}
+
+fn batches_with_context(
+    records: &[&Record],
+    include_payload: bool,
+    limit: usize,
+    ctx: &ExecutionContext,
+) -> Result<Vec<Vec<TextEvidence>>> {
     let mut batches = vec![];
     let mut batch = vec![];
     let mut size = 0;
-    for record in records {
+    for (i, record) in records.iter().enumerate() {
+        ctx.tick(Stage::AiPreparing, None, i, Some(records.len()))?;
         let text = evidence_text(record, include_payload);
         let n = text.len() + 1;
         if n > limit {
@@ -347,14 +364,38 @@ pub struct AiAnalysis {
     pub error: Option<String>,
 }
 
+pub struct ControlledAiAnalysis {
+    pub analysis: AiAnalysis,
+    pub cancelled: bool,
+}
+
 /// Preserves accepted results and raw replies if a later batch fails.
-/// Progress reports one-based batch, total batch count, and attempt (1 through 3).
 pub fn analyze_report_with_progress(
     records: &[&Record],
     config: &AiConfig,
     include_payload: bool,
-    mut progress: impl FnMut(usize, usize, usize),
+    progress: impl FnMut(usize, usize, usize),
 ) -> Result<AiAnalysis> {
+    Ok(analyze_report_with_context(
+        records,
+        config,
+        include_payload,
+        &ExecutionContext::default(),
+        progress,
+    )?
+    .analysis)
+}
+
+/// Cancellation is cooperative: finish/validate an in-flight response, but do not
+/// retry or start another request after cancellation. Accepted results stay available.
+pub fn analyze_report_with_context(
+    records: &[&Record],
+    config: &AiConfig,
+    include_payload: bool,
+    ctx: &ExecutionContext,
+    mut progress: impl FnMut(usize, usize, usize),
+) -> Result<ControlledAiAnalysis> {
+    ctx.check()?;
     config.validate()?;
     if records.is_empty() {
         bail!("no evidence selected for AI analysis");
@@ -364,7 +405,7 @@ pub fn analyze_report_with_progress(
         .timeout(Duration::from_secs(config.timeout_seconds))
         .redirect(Policy::none())
         .build()?;
-    let batches = batches(records, include_payload, config.batch_bytes)?;
+    let batches = batches_with_context(records, include_payload, config.batch_bytes, ctx)?;
     let count = batches.len();
     let mut run = AiRun {
         model: config.model.clone(),
@@ -381,6 +422,9 @@ pub fn analyze_report_with_progress(
     let mut seen = HashSet::new();
     let mut failure = None;
     for (i, batch) in batches.into_iter().enumerate() {
+        if ctx.cancellation.is_cancelled() {
+            break;
+        }
         let allowed: HashSet<String> = batch.iter().map(|record| record.id.clone()).collect();
         let mut user = format!(
             "当前批次 batch: {}\n总批次 total_batches: {}\n当前批次记录数: {}\n包含网络原始包及载荷: {}\n\n",
@@ -401,7 +445,20 @@ pub fn analyze_report_with_progress(
         };
         let mut accepted = None;
         for attempt in 1..=3 {
+            if ctx.cancellation.is_cancelled() {
+                break;
+            }
             progress(i + 1, count, attempt);
+            ctx.notify(ProgressEvent {
+                stage: Stage::Ai,
+                source: None,
+                completed: i + 1,
+                total: Some(count),
+                attempt: Some(attempt),
+            });
+            if ctx.cancellation.is_cancelled() {
+                break;
+            }
             let retry_user = if attempt == 1 {
                 user.clone()
             } else {
@@ -441,6 +498,9 @@ pub fn analyze_report_with_progress(
                 }
             }
         }
+        if batch_result.attempts.is_empty() {
+            break;
+        }
         if let Some(error) = &batch_result.error {
             failure = Some(format!(
                 "AI 第 {}/{} 批失败（请求 {} 次，已完成 {}/{} 批）：{}；后续批次未执行，已完成结果和原始回复保存在报告中。",
@@ -472,12 +532,24 @@ pub fn analyze_report_with_progress(
             }
         }
     }
-    Ok(AiAnalysis {
-        findings,
-        run,
-        error: failure,
+    let cancelled = ctx.cancellation.is_cancelled();
+    if cancelled {
+        failure = Some(format!(
+            "AI 分析已取消（已完成 {}/{} 批）；已完成结果和原始回复保存在报告中，后续请求未发送。",
+            run.completed(),
+            count
+        ));
+    }
+    Ok(ControlledAiAnalysis {
+        analysis: AiAnalysis {
+            findings,
+            run,
+            error: failure,
+        },
+        cancelled,
     })
 }
+
 pub fn check(config: &AiConfig) -> Result<()> {
     config.validate()?;
     let client = Client::builder()

@@ -1,3 +1,4 @@
+use crate::execution::{ExecutionContext, ReportOutcome, Stage};
 use crate::{
     ingest::{IngestOptions, make_record, source_for},
     model::*,
@@ -7,6 +8,12 @@ use chrono::{DateTime, Utc};
 use std::path::Path;
 
 pub fn collect_processes() -> Result<AnalysisReport> {
+    Ok(collect_processes_with_context(&ExecutionContext::default())?.report)
+}
+
+pub fn collect_processes_with_context(ctx: &ExecutionContext) -> Result<ReportOutcome> {
+    ctx.emit(Stage::Collecting, Some("local processes"), 0, None);
+    ctx.check()?;
     if !sysinfo::IS_SUPPORTED_SYSTEM {
         bail!("process collection unsupported on this operating system");
     }
@@ -42,7 +49,14 @@ pub fn collect_processes() -> Result<AnalysisReport> {
         &bytes,
     );
     let mut report = AnalysisReport::default();
-    for p in processes {
+    report.sources.push(source.clone());
+    for (i, p) in processes.into_iter().enumerate() {
+        if ctx
+            .tick(Stage::Collecting, Some(&source.path), i, None)
+            .is_err()
+        {
+            return Ok(ReportOutcome::cancelled(report, &source.path));
+        }
         if p.path.as_deref().is_none_or(str::is_empty) {
             report.warn(
                 &source.path,
@@ -59,12 +73,34 @@ pub fn collect_processes() -> Result<AnalysisReport> {
             RecordData::Process(p),
         ));
     }
-    report.sources.push(source);
-    Ok(report)
+    ctx.emit(
+        Stage::Collecting,
+        Some(&source.path),
+        report.records.len(),
+        Some(report.records.len()),
+    );
+    if ctx.cancellation.is_cancelled() {
+        Ok(ReportOutcome::cancelled(report, &source.path))
+    } else {
+        Ok(ReportOutcome::complete(report))
+    }
 }
 
 /// Read standard locations on Linux; retain native event-log exports on Windows.
 pub fn collect_common_logs(options: &IngestOptions, evidence_dir: &Path) -> Result<AnalysisReport> {
+    Ok(
+        collect_common_logs_with_context(options, evidence_dir, &ExecutionContext::default())?
+            .report,
+    )
+}
+
+pub fn collect_common_logs_with_context(
+    options: &IngestOptions,
+    evidence_dir: &Path,
+    ctx: &ExecutionContext,
+) -> Result<ReportOutcome> {
+    ctx.emit(Stage::Collecting, Some("local logs"), 0, None);
+    ctx.check()?;
     let mut report = AnalysisReport::default();
     #[cfg(target_os = "linux")]
     {
@@ -83,13 +119,23 @@ pub fn collect_common_logs(options: &IngestOptions, evidence_dir: &Path) -> Resu
             "/var/log/httpd/error_log",
         ];
         for path in paths {
+            if ctx.cancellation.is_cancelled() {
+                return Ok(ReportOutcome::cancelled(report, "local logs"));
+            }
+            ctx.emit(Stage::Collecting, Some(path), report.sources.len(), None);
             if !Path::new(path).exists() {
                 continue;
             }
             let mut opts = options.clone();
             opts.format = crate::InputFormat::Auto;
-            match crate::ingest::ingest_file(Path::new(path), &opts) {
-                Ok(r) => report.merge(r),
+            match crate::ingest::ingest_file_with_context(Path::new(path), &opts, ctx) {
+                Ok(r) => {
+                    let cancelled = r.cancelled;
+                    report.merge(r.report);
+                    if cancelled {
+                        return Ok(ReportOutcome { report, cancelled });
+                    }
+                }
                 Err(e) => report.error(path, None, e.to_string()),
             }
         }
@@ -107,6 +153,18 @@ pub fn collect_common_logs(options: &IngestOptions, evidence_dir: &Path) -> Resu
             "Application",
             "Microsoft-Windows-PowerShell/Operational",
         ] {
+            if ctx.cancellation.is_cancelled() {
+                return Ok(ReportOutcome::cancelled(report, "local logs"));
+            }
+            ctx.emit(
+                Stage::Collecting,
+                Some(channel),
+                report.sources.len(),
+                Some(4),
+            );
+            if ctx.cancellation.is_cancelled() {
+                return Ok(ReportOutcome::cancelled(report, "local logs"));
+            }
             let file = evidence_dir.join(format!(
                 "{}-{}.evtx",
                 channel.replace('/', "_"),
@@ -121,8 +179,14 @@ pub fn collect_common_logs(options: &IngestOptions, evidence_dir: &Path) -> Resu
                 Ok(out) if out.status.success() => {
                     let mut options = options.clone();
                     options.format = crate::InputFormat::Evtx;
-                    match crate::ingest::ingest_file(&file, &options) {
-                        Ok(r) => report.merge(r),
+                    match crate::ingest::ingest_file_with_context(&file, &options, ctx) {
+                        Ok(r) => {
+                            let cancelled = r.cancelled;
+                            report.merge(r.report);
+                            if cancelled {
+                                return Ok(ReportOutcome { report, cancelled });
+                            }
+                        }
                         Err(e) => report.error(file.to_string_lossy(), None, e.to_string()),
                     }
                 }
@@ -140,11 +204,15 @@ pub fn collect_common_logs(options: &IngestOptions, evidence_dir: &Path) -> Resu
     }
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
-        let _ = (options, evidence_dir, &mut report);
+        let _ = (options, evidence_dir, &mut report, ctx);
         bail!("automatic log collection supports Windows/Linux; import files on this OS");
     }
     #[allow(unreachable_code)]
-    Ok(report)
+    if ctx.cancellation.is_cancelled() {
+        Ok(ReportOutcome::cancelled(report, "local logs"))
+    } else {
+        Ok(ReportOutcome::complete(report))
+    }
 }
 
 /// Text process trees grouped by source. Orphans and cyclic snapshots stay visible.
