@@ -37,6 +37,44 @@ easy-analyzer config -h
 
 各命令只接受对应模块的参数。`logs --format` 限定为日志格式；`processes` 固定读取进程 JSON，`pcap` 固定读取抓包文件。需要同时导入日志和采集进程时使用 `analyze --live-processes`。`--include-payload` 仅适用于 `pcap/analyze` 的 AI 分析。`--ai-scope matches` 必须同时提供 `--query` 或 `--suspicious`。
 
+### 短选项
+
+所有长选项均有单字母写法，同一选项在不同命令中的字母一致；短选项区分大小写。文件路径直接写在命令后。
+
+```sh
+easy-analyzer logs cases/access.log -q 'union.*select|\.env' -r -s
+easy-analyzer logs cases/Security.evtx -a -S suspicious
+easy-analyzer logs cases/access.log -o json -O reports/access.json
+easy-analyzer analyze cases/wtmp cases/processes.json -t -j reports/case.json -H reports/case.html
+easy-analyzer -c settings.toml config init
+```
+
+| 短选项 | 长选项 | 用途 |
+| --- | --- | --- |
+| `-c` | `--config` | AI 配置文件路径 |
+| `-f` | `--format` | 强制指定输入格式 |
+| `-w` | `--web-format` | Web 日志格式字符串 |
+| `-W` | `--web-format-file` | Web 日志格式定义文件 |
+| `-l` | `--auto-load` | 自动加载本机日志 |
+| `-p` | `--live-processes` | 将本机进程加入混合分析 |
+| `-e` | `--evidence-dir` | Windows 导出证据目录 |
+| `-q` | `--query` | 查询关键词或表达式 |
+| `-r` | `--regex` | 启用正则查询 |
+| `-s` | `--suspicious` | 筛选可疑证据 |
+| `-t` | `--tree` | 显示进程树 |
+| `-a` | `--ai` | 启用 AI 分析 |
+| `-S` | `--ai-scope` | 指定 AI 发送范围 |
+| `-P` | `--include-payload` | 向 AI 发送 PCAP 原始包及载荷 |
+| `-o` | `--output` | 主输出格式 |
+| `-O` | `--out` | 主输出文件路径 |
+| `-j` | `--json-out` | 额外输出 JSON 报告 |
+| `-H` | `--html-out` | 额外输出 HTML 报告 |
+| `-n` | `--limit` | 终端显示数量 |
+| `-m` | `--max-file-mb` | 单个输入文件大小上限 |
+| `-M` | `--max-records` | 单个输入的记录数上限 |
+| `-h` | `--help` | 当前命令帮助 |
+| `-V` | `--version` | 顶层命令的版本信息 |
+
 ```sh
 # 多种证据混合导入，自动识别并分类
 easy-analyzer analyze cases/Security.evtx cases/wtmp cases/access.log cases/processes.json cases/capture.pcap

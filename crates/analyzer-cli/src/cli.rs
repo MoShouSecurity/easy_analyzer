@@ -5,6 +5,31 @@ use clap::{
 };
 use std::path::PathBuf;
 
+// Keep each spelling consistent across commands, including global arguments.
+const SHORT_OPTIONS: &[(&str, char)] = &[
+    ("config", 'c'),
+    ("format", 'f'),
+    ("web_format", 'w'),
+    ("web_format_file", 'W'),
+    ("auto_load", 'l'),
+    ("live_processes", 'p'),
+    ("evidence_dir", 'e'),
+    ("query", 'q'),
+    ("regex", 'r'),
+    ("suspicious", 's'),
+    ("tree", 't'),
+    ("ai", 'a'),
+    ("ai_scope", 'S'),
+    ("include_payload", 'P'),
+    ("output", 'o'),
+    ("out", 'O'),
+    ("json_out", 'j'),
+    ("html_out", 'H'),
+    ("limit", 'n'),
+    ("max_file_mb", 'm'),
+    ("max_records", 'M'),
+];
+
 const HELP_TEMPLATE: &str = "{about-with-newline}\n用法：{usage}\n\n{all-args}{after-help}";
 const COMMAND_HELP_TEMPLATE: &str = "{about-with-newline}\n用法：{usage}\n\n功能命令：\n{subcommands}\n\n通用参数：\n{options}{after-help}";
 const ROOT_EXAMPLES: &str = "如何选择命令：
@@ -12,9 +37,9 @@ const ROOT_EXAMPLES: &str = "如何选择命令：
   不确定文件类型，或需要混合分析 → analyze；AI 服务配置 → config
 
 常用示例：
-  easy-analyzer logs cases/Security.evtx --suspicious
-  easy-analyzer logs cases/access.log --query '.env'
-  easy-analyzer processes --tree
+  easy-analyzer logs cases/Security.evtx -s
+  easy-analyzer logs cases/access.log -q '.env'
+  easy-analyzer processes -t
   easy-analyzer pcap cases/capture.pcapng
   easy-analyzer analyze cases/wtmp cases/processes.json cases/capture.pcap
   easy-analyzer config init
@@ -42,8 +67,8 @@ pub enum Command {
     /// 混合分析：自动识别日志、进程快照和 PCAP 文件
     #[command(after_help = "示例：
   easy-analyzer analyze cases/Security.evtx cases/wtmp cases/processes.json cases/capture.pcap
-  easy-analyzer analyze cases/access.log --json-out reports/case.json --html-out reports/case.html
-  easy-analyzer analyze --live-processes --tree
+  easy-analyzer analyze cases/access.log -j reports/case.json -H reports/case.html
+  easy-analyzer analyze -p -t
 
 输入：提供文件，或使用 --auto-load / --live-processes；文件名 - 表示标准输入。
 --format 强制指定所有输入的格式，混合文件通常保持 auto。
@@ -52,12 +77,12 @@ pub enum Command {
     Analyze(AnalyzeArgs),
     /// 日志分析：EVTX、Linux 登录日志、SSH 和 Web 日志
     #[command(after_help = "示例：
-  easy-analyzer logs cases/Security.evtx --suspicious
+  easy-analyzer logs cases/Security.evtx -s
   easy-analyzer logs cases/wtmp cases/btmp
-  easy-analyzer logs cases/access.log --query 'union.*select|\\.env' --regex
-  easy-analyzer logs cases/access.log --web-format-file nginx-format.conf
-  cat cases/auth.log | easy-analyzer logs - --format text
-  easy-analyzer logs cases/Security.evtx --ai --ai-scope suspicious
+  easy-analyzer logs cases/access.log -q 'union.*select|\\.env' -r
+  easy-analyzer logs cases/access.log -W nginx-format.conf
+  cat cases/auth.log | easy-analyzer logs - -f text
+  easy-analyzer logs cases/Security.evtx -a -S suspicious
 
 输入：提供日志文件或 --auto-load；文件名 - 表示标准输入。
 --auto-load 只加载当前 Windows/Linux 主机的日志；macOS 请指定离线文件。
@@ -66,10 +91,10 @@ JSON/HTML 保留完整记录；筛选结果 ID 位于 query_matches。")]
     Logs(LogArgs),
     /// 进程分析：无文件时采集本机，有文件时导入 JSON 快照
     #[command(after_help = "示例：
-  easy-analyzer processes --tree
-  easy-analyzer processes cases/processes.json --query powershell
-  easy-analyzer processes cases/processes.json --ai --ai-scope suspicious
-  easy-analyzer processes --json-out reports/processes.json
+  easy-analyzer processes -t
+  easy-analyzer processes cases/processes.json -q powershell
+  easy-analyzer processes cases/processes.json -a -S suspicious
+  easy-analyzer processes -j reports/processes.json
 
 输入：不提供文件时采集当前主机；文件输入须为进程 JSON 数组或本工具报告。
 可提供多个快照；文件名 - 表示从标准输入读取 JSON。
@@ -79,9 +104,9 @@ JSON/HTML 保留完整记录；筛选结果 ID 位于 query_matches。")]
     /// 网络分析：导入 PCAP/PCAPNG，解析包与网络会话
     #[command(after_help = "示例：
   easy-analyzer pcap cases/capture.pcapng
-  easy-analyzer pcap cases/capture.pcap --query '/.env'
-  easy-analyzer pcap cases/capture.pcap --ai
-  easy-analyzer pcap cases/capture.pcap --ai --include-payload
+  easy-analyzer pcap cases/capture.pcap -q '/.env'
+  easy-analyzer pcap cases/capture.pcap -a
+  easy-analyzer pcap cases/capture.pcap -a -P
 
 输入：提供一个或多个 PCAP/PCAPNG 文件；文件名 - 表示标准输入。
 本命令离线分析已有抓包文件，不启动实时抓包。
@@ -93,9 +118,9 @@ AI 默认只接收包摘要；--include-payload 额外发送原始包与载荷�
   1. easy-analyzer config init
   2. 编辑配置中的 base_url、model；将密钥设到 api_key_env 指定的环境变量
   3. easy-analyzer config check
-  4. easy-analyzer logs cases/Security.evtx --ai
+  4. easy-analyzer logs cases/Security.evtx -a
 
-自定义配置路径：easy-analyzer --config settings.toml config init
+自定义配置路径：easy-analyzer -c settings.toml config init
 Linux/macOS 默认：$XDG_CONFIG_HOME/easy-analyzer/config.toml 或 ~/.config/easy-analyzer/config.toml
 Windows 默认：%APPDATA%/easy-analyzer/config.toml
 config check 会发送一个不含案件证据的小请求，可能产生服务费用。")]
@@ -383,6 +408,14 @@ pub fn command() -> clap::Command {
                     .help_heading("通用选项"),
             )
             .mut_args(|arg| {
+                let arg = if let Some((_, short)) = SHORT_OPTIONS
+                    .iter()
+                    .find(|(id, _)| *id == arg.get_id().as_str())
+                {
+                    arg.short(*short)
+                } else {
+                    arg
+                };
                 let order = match arg.get_id().as_str() {
                     "files" => 10,
                     "format" => 11,
