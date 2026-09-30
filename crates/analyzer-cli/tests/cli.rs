@@ -12,6 +12,47 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 #[test]
+fn offline_windows_and_linux_logs_on_current_host() {
+    let inputs = [
+        "synthetic.evtx",
+        "sample.utmp",
+        "sample.wtmp",
+        "sample.btmp",
+        "auth.log",
+        "access.log",
+    ];
+    let out = exe()
+        .arg("logs")
+        .args(inputs.map(fixture))
+        .args(["--output", "json"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["sources"].as_array().unwrap().len(), 6);
+    let records = report["records"].as_array().unwrap();
+    assert_eq!(records.len(), 25);
+    assert!(
+        records
+            .iter()
+            .all(|r| !r["raw"].as_str().unwrap().is_empty())
+    );
+    assert!(records.iter().any(|r| {
+        r["data"]["fields"]["fields"]["event_id"] == "4625" && r["status"] == "parsed"
+    }));
+    assert!(
+        report["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| { f["origin"] == "local:login-failures" })
+    );
+}
+#[test]
 fn mixed_routing_and_three_outputs() {
     let dir = tempfile::tempdir().unwrap();
     let json = dir.path().join("result.json");

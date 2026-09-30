@@ -1,6 +1,6 @@
 # Easy Analyzer
 
-Rust 应急响应分析 CLI，支持 Windows/Linux x64。日志、进程和 PCAP 在本地解析，只有显式指定 `--ai` 才调用自定义 OpenAI 兼容服务。GUI 属于下一阶段，共享核心已经独立为库。
+Rust 应急响应分析 CLI，支持 Windows/Linux x64 和 macOS（Apple Silicon/Intel）。日志、进程和 PCAP 在本地解析，只有显式指定 `--ai` 才调用自定义 OpenAI 兼容服务。GUI 属于下一阶段，共享核心已经独立为库。
 
 ## 构建与运行
 
@@ -13,7 +13,7 @@ cargo run -- analyze tests/fixtures/auth.log tests/fixtures/processes.json tests
 
 发布包包含 `samples` 合成样本，可运行 `easy-analyzer analyze samples/auth.log samples/processes.json samples/sample.pcap` 查看效果。
 
-Windows 可执行文件为 `target/release/easy-analyzer.exe`；Linux 为 `target/release/easy-analyzer`。
+Windows 可执行文件为 `target/release/easy-analyzer.exe`；Linux/macOS 为 `target/release/easy-analyzer`。macOS 发布包为通用二进制，使用方式见 [macOS 指南](docs/MACOS.md)；开发者可运行 `bash tools/package-macos.sh` 构建发布包（需要两种 macOS Rust target、Xcode 命令行工具及 Python 3）。
 
 ## 输入和分析
 
@@ -68,6 +68,8 @@ Linux 常见来源包括 `/run/utmp`、`/var/log/{wtmp,btmp,auth.log,secure}`，
 
 Windows 本机加载通过 `wevtutil epl` 导出 Security、System、Application 和 PowerShell Operational 日志。Security 通常需要管理员权限；不会自动提权。导出文件保留在 `--evidence-dir`，权限不足或通道不可用会显示诊断。
 
+macOS 可导入 Windows EVTX、Linux glibc x64 utmp/wtmp/btmp、SSH 和 Apache/Nginx 日志、进程快照及 PCAP/PCAPNG，使用与其他平台相同的解析器；可以采集 macOS 本机进程。`logs --auto-load` 仅适用于在 Windows/Linux 主机上运行，macOS 请显式选择已复制来的文件；当前不采集 macOS Unified Log，也不通过 SSH 自动读取远程日志。
+
 进程采集包含 PID、父 PID、名称、可执行路径、命令行、账号 ID、启动时间和状态。权限不足、内核进程或瞬间退出可能导致部分字段缺失。进程快照接受如下 JSON 数组，也支持从本软件报告重新导入进程记录（保留原快照分组，来源哈希指向所导入的报告文件）：
 
 ```json
@@ -98,7 +100,7 @@ response_format = "json_object" # json_schema / none 也可用
 token_parameter = "max_tokens" # 部分模型需 max_completion_tokens
 ```
 
-默认配置位于 Linux `$XDG_CONFIG_HOME/easy-analyzer/config.toml` 或 `~/.config/easy-analyzer/config.toml`；Windows 位于 `%APPDATA%/easy-analyzer/config.toml`。用全局 `--config` 指定其他路径。
+默认配置位于 Linux/macOS `$XDG_CONFIG_HOME/easy-analyzer/config.toml` 或 `~/.config/easy-analyzer/config.toml`；Windows 位于 `%APPDATA%/easy-analyzer/config.toml`。用全局 `--config` 指定其他路径。
 
 ```sh
 easy-analyzer config show
@@ -134,6 +136,6 @@ cargo test --workspace --locked
 
 `tests/fixtures` 全部是由 `tools/generate-fixtures.py` 生成的合成证据，使用示例地址和账号，可纳入 Git。`.gitignore` 排除 `target`、`cases`、`evidence`、`reports`、本地配置和环境变量文件；真实案件请放在这些目录。源码、Cargo.lock、合成样本和 CI 配置应提交。
 
-GitHub Actions 在 Windows 2022 和 Ubuntu 22.04 x64 上运行测试、构建和本机进程采集；Windows 额外验证本机 System 日志导出。版本标签 `v*` 触发构建并保存包含 README/LICENSE 的发布压缩包，发布任务必须先通过相同测试。需要配置 Git remote 并推送后工作流才会执行。
+GitHub Actions 在 Windows 2022、Ubuntu 22.04 和 macOS 上运行测试、构建和本机进程采集；Windows 额外验证本机 System 日志导出。macOS CI 包按 runner 的实际架构命名，通用包由本地打包脚本生成。版本标签 `v*` 触发构建并保存包含 README/LICENSE 的发布压缩包，发布任务必须先通过相同测试。需要配置 Git remote 并推送后工作流才会执行。
 
 共享库 `crates/analyzer-core` 提供输入识别、采集、规则、AI、报告和证据类型；`crates/analyzer-cli` 只负责命令和输出协调。后续全 Rust GUI 通过 `ingest_bytes` 支持粘贴/拖放，复用同一份分析结果及配置；日志/进程页面、设置和 AI 按钮在下一阶段实现。

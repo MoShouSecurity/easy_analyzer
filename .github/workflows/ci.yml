@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, windows-2022]
+        os: [ubuntu-22.04, windows-2022, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -53,9 +53,29 @@ jobs:
           Copy-Item tests/fixtures dist/easy-analyzer-windows-x64/samples -Recurse
           Compress-Archive dist/easy-analyzer-windows-x64/* dist/easy-analyzer-windows-x64.zip
           (Get-FileHash dist/easy-analyzer-windows-x64.zip -Algorithm SHA256).Hash | Set-Content dist/easy-analyzer-windows-x64.zip.sha256
+      - name: Package macOS
+        if: runner.os == 'macOS'
+        run: |
+          package="easy-analyzer-macos-$(uname -m)"
+          mkdir -p "dist/$package/docs"
+          cp target/release/easy-analyzer README.md LICENSE "dist/$package/"
+          cp docs/MACOS.md docs/VALIDATION.md "dist/$package/docs/"
+          cp docs/MACOS.md "dist/$package/开始使用.md"
+          cp tools/macos-demo.command "dist/$package/演示.command"
+          chmod 755 "dist/$package/演示.command"
+          cp -R tests/fixtures "dist/$package/samples"
+          codesign --force --sign - "dist/$package/easy-analyzer"
+          codesign --verify --strict "dist/$package/easy-analyzer"
+          {
+            echo "git_commit=$GITHUB_SHA"
+            echo "architectures=$(uname -m)"
+            echo "code_signing=ad-hoc (not notarized)"
+          } > "dist/$package/BUILD_INFO.txt"
+          tar -czf "dist/$package.tar.gz" -C dist "$package"
+          shasum -a 256 "dist/$package.tar.gz" > "dist/$package.tar.gz.sha256"
       - uses: actions/upload-artifact@v4
         with:
-          name: easy-analyzer-${{ runner.os }}-x64
+          name: easy-analyzer-${{ runner.os }}-${{ runner.arch }}
           path: |
             dist/*.zip
             dist/*.tar.gz
