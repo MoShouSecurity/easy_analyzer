@@ -1,0 +1,29 @@
+[
+  {
+    "pid": 1,
+    "parent_pid": null,
+    "name": "init",
+    "path": "/sbin/init",
+    "command": []
+  },
+  {
+    "pid": 100,
+    "parent_pid": 1,
+    "name": "demo",
+    "path": "/tmp/demo",
+    "command": [
+      "demo"
+    ]
+  },
+  {
+    "pid": 101,
+    "parent_pid": 100,
+    "name": "powershell.exe",
+    "path": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    "command": [
+      "powershell.exe",
+      "-EncodedCommand",
+      "ZGVtbw=="
+    ]
+  }
+]
