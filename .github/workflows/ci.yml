@@ -56,6 +56,7 @@ jobs:
       - name: Package macOS
         if: runner.os == 'macOS'
         run: |
+          test "$(uname -m)" = arm64
           package="easy-analyzer-macos-$(uname -m)"
           mkdir -p "dist/$package/docs"
           cp target/release/easy-analyzer README.md LICENSE "dist/$package/"

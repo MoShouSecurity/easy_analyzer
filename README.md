@@ -1,6 +1,6 @@
 # Easy Analyzer
 
-Rust 应急响应分析 CLI，支持 Windows/Linux x64 和 macOS（Apple Silicon/Intel）。日志、进程和 PCAP 在本地解析，只有显式指定 `--ai` 才调用自定义 OpenAI 兼容服务。GUI 属于下一阶段，共享核心已经独立为库。
+Rust 应急响应分析 CLI，支持 Windows/Linux x64 和 macOS Apple Silicon（arm64）。日志、进程和 PCAP 在本地解析，只有显式指定 `--ai` 才调用自定义 OpenAI 兼容服务。GUI 属于下一阶段，共享核心已经独立为库。
 
 ## 构建与运行
 
@@ -13,7 +13,7 @@ cargo run -- analyze tests/fixtures/auth.log tests/fixtures/processes.json tests
 
 发布包包含 `samples` 合成样本，可运行 `easy-analyzer analyze samples/auth.log samples/processes.json samples/sample.pcap` 查看效果。
 
-Windows 可执行文件为 `target/release/easy-analyzer.exe`；Linux/macOS 为 `target/release/easy-analyzer`。macOS 发布包为通用二进制，使用方式见 [macOS 指南](docs/MACOS.md)；开发者可运行 `bash tools/package-macos.sh` 构建发布包（需要两种 macOS Rust target、Xcode 命令行工具及 Python 3）。
+Windows 可执行文件为 `target/release/easy-analyzer.exe`；Linux/macOS 为 `target/release/easy-analyzer`。macOS 发布包为 arm64 二进制，使用方式见 [macOS 指南](docs/MACOS.md)；开发者可运行 `bash tools/package-macos.sh` 构建发布包（需要 `aarch64-apple-darwin` Rust target、Xcode 命令行工具及 Python 3）。
 
 ## 输入和分析
 
@@ -136,6 +136,6 @@ cargo test --workspace --locked
 
 `tests/fixtures` 全部是由 `tools/generate-fixtures.py` 生成的合成证据，使用示例地址和账号，可纳入 Git。`.gitignore` 排除 `target`、`cases`、`evidence`、`reports`、本地配置和环境变量文件；真实案件请放在这些目录。源码、Cargo.lock、合成样本和 CI 配置应提交。
 
-GitHub Actions 在 Windows 2022、Ubuntu 22.04 和 macOS 上运行测试、构建和本机进程采集；Windows 额外验证本机 System 日志导出。macOS CI 包按 runner 的实际架构命名，通用包由本地打包脚本生成。版本标签 `v*` 触发构建并保存包含 README/LICENSE 的发布压缩包，发布任务必须先通过相同测试。需要配置 Git remote 并推送后工作流才会执行。
+GitHub Actions 在 Windows 2022、Ubuntu 22.04 和 macOS arm64 上运行测试、构建和本机进程采集；Windows 额外验证本机 System 日志导出。macOS arm64 发布包也可由本地打包脚本生成。版本标签 `v*` 触发构建并保存包含 README/LICENSE 的发布压缩包，发布任务必须先通过相同测试。需要配置 Git remote 并推送后工作流才会执行。
 
 共享库 `crates/analyzer-core` 提供输入识别、采集、规则、AI、报告和证据类型；`crates/analyzer-cli` 只负责命令和输出协调。后续全 Rust GUI 通过 `ingest_bytes` 支持粘贴/拖放，复用同一份分析结果及配置；日志/进程页面、设置和 AI 按钮在下一阶段实现。

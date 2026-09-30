@@ -9,14 +9,12 @@ if [[ "$(uname -s)" != Darwin ]]; then
 fi
 
 VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
-PACKAGE_NAME="easy-analyzer-${VERSION}-macos-universal"
+PACKAGE_NAME="easy-analyzer-${VERSION}-macos-arm64"
 BUILD_ROOT="${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}"
 if [[ "$BUILD_ROOT" != /* ]]; then BUILD_ROOT="$PROJECT_ROOT/$BUILD_ROOT"; fi
 
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
-for target in aarch64-apple-darwin x86_64-apple-darwin; do
-  cargo build --release --locked --target "$target"
-done
+cargo build --release --locked --target aarch64-apple-darwin
 
 # Build in a fresh directory so old packaging files never enter a new archive.
 mkdir -p "$PROJECT_ROOT/dist"
@@ -24,14 +22,11 @@ STAGING="$(mktemp -d "$PROJECT_ROOT/dist/.macos-package.XXXXXX")"
 trap 'rm -rf "$STAGING"' EXIT
 STAGED_PACKAGE="$STAGING/$PACKAGE_NAME"
 mkdir -p "$STAGED_PACKAGE/docs"
-lipo -create "$BUILD_ROOT/aarch64-apple-darwin/release/easy-analyzer" \
-  "$BUILD_ROOT/x86_64-apple-darwin/release/easy-analyzer" \
-  -output "$STAGED_PACKAGE/easy-analyzer"
+cp "$BUILD_ROOT/aarch64-apple-darwin/release/easy-analyzer" "$STAGED_PACKAGE/easy-analyzer"
 chmod 755 "$STAGED_PACKAGE/easy-analyzer"
 codesign --force --sign - "$STAGED_PACKAGE/easy-analyzer"
 codesign --verify --strict "$STAGED_PACKAGE/easy-analyzer"
 lipo "$STAGED_PACKAGE/easy-analyzer" -verify_arch arm64
-lipo "$STAGED_PACKAGE/easy-analyzer" -verify_arch x86_64
 cp README.md LICENSE "$STAGED_PACKAGE/"
 cp docs/MACOS.md docs/VALIDATION.md "$STAGED_PACKAGE/docs/"
 cp docs/MACOS.md "$STAGED_PACKAGE/开始使用.md"
@@ -41,7 +36,7 @@ chmod 755 "$STAGED_PACKAGE/演示.command"
 {
   echo "version=$VERSION"
   echo "git_commit=$(git rev-parse HEAD)"
-  echo "architectures=arm64,x86_64"
+  echo "architectures=arm64"
   echo "deployment_target=$MACOSX_DEPLOYMENT_TARGET"
   echo "code_signing=ad-hoc (not notarized)"
   if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then

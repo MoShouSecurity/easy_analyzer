@@ -1,6 +1,6 @@
 # macOS 使用指南
 
-这是 CLI 版本。通用包中的 `easy-analyzer` 同时包含 Apple Silicon（arm64）和 Intel（x86_64），构建部署目标为 macOS 11.0；实际运行验证的平台见 `VALIDATION.md`。
+这是 CLI 版本。包中的 `easy-analyzer` 适用于 Apple Silicon（arm64），构建部署目标为 macOS 11.0；实际运行验证的平台见 `VALIDATION.md`。
 
 ## 解压后运行
 
