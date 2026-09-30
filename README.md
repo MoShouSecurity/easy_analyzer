@@ -70,6 +70,7 @@ easy-analyzer -c settings.toml config init
 | `-j` | `--json-out` | 额外输出 JSON 报告 |
 | `-H` | `--html-out` | 额外输出 HTML 报告 |
 | `-n` | `--limit` | 终端显示数量 |
+| `-R` | `--raw` | 在终端显示原始记录 |
 | `-m` | `--max-file-mb` | 单个输入文件大小上限 |
 | `-M` | `--max-records` | 单个输入的记录数上限 |
 | `-h` | `--help` | 当前命令帮助 |
@@ -189,7 +190,20 @@ easy-analyzer logs cases/access.log -s -q '.env'
 easy-analyzer logs cases/access.log -s -j reports/logs.json -H reports/logs.html
 ```
 
-终端和 HTML 按严重度从高到低展示风险计数、规则名称和证据引用；终端查询范围内的记录标注最高风险级别及全部命中规则。同一规则在同一来源的命中汇总为一项发现，因此风险计数表示发现项数，不能直接视为攻击次数。`-n` 同时限制终端每项发现展示的证据引用数量，`-n 0` 显示全部。关键词查询与 `-s` 取交集；JSON/HTML 保留完整数据及全部发现，查询结果仍位于 `query_matches`。
+终端和 HTML 按严重度从高到低展示风险计数、规则名称和证据引用；终端查询范围内的记录标注最高风险级别及全部命中规则。同一规则在同一来源的命中汇总为一项发现，因此风险计数表示发现项数，不能直接视为攻击次数。关键词查询与 `-s` 取交集；JSON/HTML 保留完整数据及全部发现，查询结果仍位于 `query_matches`。
+
+CLI 默认只显示关键字段摘要，不打印原始日志或完整字段 JSON。EVTX 展示时间、事件 ID、账号、来源 IP、登录类型及相关进程/服务/任务等重要字段；Web 展示来源、请求方法、路径和响应码；未识别记录不回显原始行。长字段折叠为单行，超过 120 字符显示省略号，不修改证据本身。每项发现默认仅列最多 3 个短位置引用（受 `-n` 上限约束）。`-n 0` 展示全部记录摘要。
+
+```sh
+# 默认重要信息摘要
+easy-analyzer logs cases/Security.evtx -s
+# 追加原始记录；EVTX 为事件 JSON，二进制登录日志为十六进制
+easy-analyzer logs cases/Security.evtx -s -R
+# 查看全部命中摘要、完整引用与原始记录
+easy-analyzer logs cases/Security.evtx -s -R -n 0
+```
+
+`-R` / `--raw` 仅控制终端文本显示，不改变关键词搜索、规则匹配、AI 发送范围或 JSON/HTML 证据。原始模式下每项证据引用数量也受 `-n` 控制，`-R -n 0` 展示全部。
 
 这些规则覆盖常见应急核查场景，无法穷尽所有攻击；命中结果表示待核查线索，不判断利用已成功。
 

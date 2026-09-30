@@ -296,16 +296,25 @@ fn run(cli: Cli) -> Result<bool> {
     report
         .findings
         .sort_by_key(|f| std::cmp::Reverse(f.severity.rank()));
-    let json = serde_json::to_string_pretty(&report)?;
+    let json = if matches!(args.output, Output::Json) || args.json_out.is_some() {
+        Some(serde_json::to_string_pretty(&report)?)
+    } else {
+        None
+    };
     if let Some(path) = &args.json_out {
-        write_output(Some(path), &json)?;
+        write_output(Some(path), json.as_deref().context("无法生成 JSON 报告")?)?;
     }
     if let Some(path) = &args.html_out {
         write_output(Some(path), &report::html(&report))?;
     }
     let output = match args.output {
-        Output::Text => report::terminal(&report, args.limit, args.tree || kind == "processes"),
-        Output::Json => json,
+        Output::Text => report::terminal_with_raw(
+            &report,
+            args.limit,
+            args.tree || kind == "processes",
+            args.raw,
+        ),
+        Output::Json => json.context("无法生成 JSON 报告")?,
         Output::Html => report::html(&report),
     };
     write_output(args.out.as_deref(), &output)?;

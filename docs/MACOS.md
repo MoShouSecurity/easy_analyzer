@@ -19,6 +19,7 @@
 
 ```sh
 ./easy-analyzer logs /path/to/Security.evtx -s
+./easy-analyzer logs /path/to/Security.evtx -s -R
 ./easy-analyzer logs /path/to/wtmp /path/to/btmp
 ./easy-analyzer logs /path/to/auth.log -s
 ./easy-analyzer logs /path/to/auth.log -q 'Failed password'
@@ -31,6 +32,8 @@
 EVTX 不需要 Windows 环境；Linux 登录二进制日志支持 glibc x64 常见的 384 字节小端布局。与当前 Mac 的 CPU 架构无关。不同布局的 BSD/macOS utmp 不在解析范围内。未知名称的登录文件可加 `--format wtmp` 等参数。
 
 日志默认运行高危、中危、低危规则，`-s` 一键查询全部命中；规则清单见 [默认日志规则](DEFAULT_RULES.md)。
+
+CLI 默认显示重要字段摘要，`-R` / `--raw` 追加原始记录；`-n 0` 展示全部摘要，`-R -n 0` 展示全部原始记录。JSON/HTML 报告始终保留完整证据。
 
 采集当前 Mac 的进程：
 

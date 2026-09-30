@@ -26,6 +26,7 @@ const SHORT_OPTIONS: &[(&str, char)] = &[
     ("json_out", 'j'),
     ("html_out", 'H'),
     ("limit", 'n'),
+    ("raw", 'R'),
     ("max_file_mb", 'm'),
     ("max_records", 'M'),
 ];
@@ -38,6 +39,7 @@ const ROOT_EXAMPLES: &str = "如何选择命令：
 
 常用示例：
   easy-analyzer logs cases/Security.evtx -s
+  easy-analyzer logs cases/Security.evtx -s -R
   easy-analyzer logs cases/access.log -q '.env'
   easy-analyzer processes -t
   easy-analyzer pcap cases/capture.pcapng
@@ -228,9 +230,15 @@ pub struct CommonArgs {
         default_value_t = 50,
         value_name = "N",
         help_heading = "报告输出",
-        help = "终端记录、诊断及每项证据引用显示上限；0 显示全部，不裁剪 JSON/HTML"
+        help = "终端记录、诊断及原始模式证据引用上限；0 显示全部，摘要引用最多 3 个"
     )]
     limit: usize,
+    #[arg(
+        long,
+        help_heading = "报告输出",
+        help = "在终端摘要后显示原始记录；默认只显示关键字段，不影响 JSON/HTML"
+    )]
+    raw: bool,
     #[arg(
         long,
         default_value_t = 512,
@@ -437,6 +445,7 @@ pub fn command() -> clap::Command {
                     "json_out" => 63,
                     "html_out" => 64,
                     "limit" => 65,
+                    "raw" => 66,
                     "max_file_mb" => 70,
                     "max_records" => 71,
                     _ => 90,
@@ -482,6 +491,7 @@ pub struct AnalysisArgs {
     pub json_out: Option<PathBuf>,
     pub html_out: Option<PathBuf>,
     pub limit: usize,
+    pub raw: bool,
     pub max_file_mb: u64,
     pub max_records: usize,
 }
@@ -507,6 +517,7 @@ impl AnalysisArgs {
             json_out: a.json_out,
             html_out: a.html_out,
             limit: a.limit,
+            raw: a.raw,
             max_file_mb: a.max_file_mb,
             max_records: a.max_records,
         }

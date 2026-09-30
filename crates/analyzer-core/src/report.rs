@@ -32,6 +32,152 @@ fn risk_summary(findings: &[&Finding]) -> String {
 }
 
 pub fn terminal(report: &AnalysisReport, limit: usize, tree: bool) -> String {
+    terminal_with_raw(report, limit, tree, false)
+}
+
+fn brief(text: &str) -> String {
+    let mut result = String::new();
+    let mut count = 0;
+    let mut gap = false;
+    for c in text.chars() {
+        if c.is_whitespace() {
+            gap = !result.is_empty();
+            continue;
+        }
+        if count == 120 {
+            result.push('…');
+            break;
+        }
+        if gap {
+            result.push(' ');
+            count += 1;
+            gap = false;
+            if count == 120 {
+                result.push('…');
+                break;
+            }
+        }
+        result.push(c);
+        count += 1;
+    }
+    result
+}
+fn log_field<'a>(log: &'a LogData, names: &[&str]) -> Option<&'a str> {
+    names.iter().find_map(|name| {
+        log.fields
+            .get(*name)
+            .map(String::as_str)
+            .or_else(|| {
+                let suffix = format!(".{name}");
+                let text_suffix = format!(".{name}.#text");
+                log.fields.iter().find_map(|(key, value)| {
+                    (key.ends_with(&suffix) || key.ends_with(&text_suffix))
+                        .then_some(value.as_str())
+                })
+            })
+            .filter(|value| !value.is_empty() && *value != "-")
+    })
+}
+fn record_summary(record: &Record) -> String {
+    match &record.data {
+        RecordData::Log(log) => {
+            let fields: &[(&str, &[&str])] = if log.category == "windows_event" {
+                &[
+                    ("事件", &["event_id", "EventID"]),
+                    ("主机", &["host", "Computer"]),
+                    ("账号", &["user", "TargetUserName"]),
+                    ("域", &["TargetDomainName"]),
+                    ("来源 IP", &["client_ip", "IpAddress", "ClientAddress"]),
+                    ("登录类型", &["LogonType"]),
+                    ("操作者", &["SubjectUserName"]),
+                    (
+                        "进程",
+                        &["ProcessName", "NewProcessName", "CallerProcessName"],
+                    ),
+                    ("服务", &["ServiceName"]),
+                    ("服务路径", &["ServiceFileName", "ImagePath"]),
+                    ("任务", &["TaskName"]),
+                    ("共享", &["ShareName"]),
+                    ("目标文件", &["RelativeTargetName"]),
+                    ("目标组/SID", &["TargetSid"]),
+                    ("状态", &["Status", "FailureReason"]),
+                    ("子状态", &["SubStatus"]),
+                    ("命令摘要", &["CommandLine", "ScriptBlockText"]),
+                ]
+            } else if log.category == "web_access" || log.category == "web_error" {
+                &[
+                    ("来源 IP", &["client_ip"]),
+                    ("方法", &["method"]),
+                    ("路径", &["uri"]),
+                    ("响应", &["status"]),
+                    ("账号", &["user"]),
+                    ("字节数", &["bytes"]),
+                    ("客户端", &["user_agent"]),
+                    ("级别", &["level"]),
+                    ("错误摘要", &["message"]),
+                ]
+            } else {
+                &[
+                    ("行为", &["action"]),
+                    ("账号", &["user"]),
+                    ("来源", &["client_ip", "host"]),
+                    ("终端", &["terminal"]),
+                    ("PID", &["pid"]),
+                ]
+            };
+            let values: Vec<_> = fields
+                .iter()
+                .filter_map(|(label, names)| {
+                    log_field(log, names).map(|value| format!("{label}={}", brief(value)))
+                })
+                .collect();
+            if values.is_empty() {
+                "未提取到关键字段；使用 -R 查看原始内容。".into()
+            } else {
+                values.join(" · ")
+            }
+        }
+        RecordData::Process(p) => {
+            let mut summary = format!(
+                "PID={} · 名称={} · 父 PID={}",
+                p.pid,
+                brief(&p.name),
+                p.parent_pid
+                    .map_or_else(|| "未知".into(), |v| v.to_string())
+            );
+            if let Some(path) = &p.path {
+                let _ = write!(summary, " · 路径={}", brief(path));
+            }
+            if let Some(user) = &p.user {
+                let _ = write!(summary, " · 用户={}", brief(user));
+            }
+            if !p.command.is_empty() {
+                let _ = write!(summary, " · 命令={}", brief(&p.command.join(" ")));
+            }
+            summary
+        }
+        RecordData::Packet(p) => {
+            let mut summary = format!(
+                "{} · {}:{} → {}:{} · {} 字节",
+                brief(&p.protocol),
+                p.source.as_deref().unwrap_or("未知"),
+                p.source_port.map_or_else(|| "-".into(), |v| v.to_string()),
+                p.destination.as_deref().unwrap_or("未知"),
+                p.destination_port
+                    .map_or_else(|| "-".into(), |v| v.to_string()),
+                p.original_bytes
+            );
+            for name in ["method", "uri", "host", "query", "protocol"] {
+                if let Some(value) = p.application.get(name) {
+                    let _ = write!(summary, " · {name}={}", brief(value));
+                }
+            }
+            summary
+        }
+    }
+}
+
+pub fn terminal_with_raw(report: &AnalysisReport, limit: usize, tree: bool, raw: bool) -> String {
     let mut out = format!(
         "Easy Analyzer · {}\nSources: {} | Records: {} | Findings: {} | Flows: {} | Diagnostics: {}\n",
         report.generated_at,
@@ -41,13 +187,37 @@ pub fn terminal(report: &AnalysisReport, limit: usize, tree: bool) -> String {
         report.flows.len(),
         report.diagnostics.len()
     );
-    for s in &report.sources {
-        let _ = writeln!(
+    for (index, s) in report.sources.iter().enumerate() {
+        let _ = write!(
             out,
-            "  [{}] {} ({} bytes, SHA256 {})",
-            s.format, s.path, s.bytes, s.sha256
+            "  来源 {} [{}] {} ({} bytes",
+            index + 1,
+            s.format,
+            s.path,
+            s.bytes
         );
+        if raw {
+            let _ = write!(out, ", SHA256 {}", s.sha256);
+        }
+        out.push_str(")\n");
     }
+    let source_numbers: std::collections::HashMap<_, _> = report
+        .sources
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.id.as_str(), i + 1))
+        .collect();
+    let records_by_id: std::collections::HashMap<_, _> =
+        report.records.iter().map(|r| (r.id.as_str(), r)).collect();
+    let location = |record: &Record| {
+        format!(
+            "来源 {}/{}",
+            source_numbers
+                .get(record.source_id.as_str())
+                .map_or_else(|| "?".into(), |i| i.to_string()),
+            record.position
+        )
+    };
     let matches = report.query_matches.as_ref().map(|ids| {
         ids.iter()
             .map(String::as_str)
@@ -70,7 +240,13 @@ pub fn terminal(report: &AnalysisReport, limit: usize, tree: bool) -> String {
             .iter()
             .filter(|id| matches.as_ref().is_none_or(|m| m.contains(id.as_str())))
             .collect();
-        let shown = if limit == 0 {
+        let shown = if !raw {
+            if limit == 0 {
+                ids.len().min(3)
+            } else {
+                limit.min(ids.len()).min(3)
+            }
+        } else if limit == 0 {
             ids.len()
         } else {
             limit.min(ids.len())
@@ -86,14 +262,20 @@ pub fn terminal(report: &AnalysisReport, limit: usize, tree: bool) -> String {
             ids.len(),
             ids.iter()
                 .take(shown)
-                .map(|id| id.as_str())
+                .map(|id| if raw {
+                    id.to_string()
+                } else {
+                    records_by_id
+                        .get(id.as_str())
+                        .map_or_else(|| "未知证据".into(), |r| location(r))
+                })
                 .collect::<Vec<_>>()
                 .join(", ")
         );
         if shown < ids.len() {
             let _ = writeln!(
                 out,
-                "    其余 {} 条证据引用见 JSON/HTML；-n 0 显示全部。",
+                "    其余 {} 条证据引用见 JSON/HTML；-R -n 0 显示全部引用及原始记录。",
                 ids.len() - shown
             );
         }
@@ -102,7 +284,11 @@ pub fn terminal(report: &AnalysisReport, limit: usize, tree: bool) -> String {
         out.push_str("\nProcess tree / 进程树\n");
         out.push_str(&process_tree(&report.records));
     }
-    out.push_str("\nRecords / 记录\n");
+    out.push_str(if raw {
+        "\n重要记录摘要及原始内容\n"
+    } else {
+        "\n重要记录摘要（-R 可查看原始内容）\n"
+    });
     let mut selected: Vec<_> = report
         .records
         .iter()
@@ -141,41 +327,24 @@ pub fn terminal(report: &AnalysisReport, limit: usize, tree: bool) -> String {
         }
         let _ = writeln!(
             out,
-            "  {} [{:?}] {}\n    {}",
-            r.id,
-            r.status,
-            r.timestamp.as_deref().unwrap_or("time unavailable"),
-            match &r.data {
-                RecordData::Log(l) => format!(
-                    "{} {}",
-                    l.category,
-                    if l.fields.is_empty() {
-                        r.raw.clone()
-                    } else {
-                        serde_json::to_string(&l.fields).unwrap_or_default()
-                    }
-                ),
-                RecordData::Process(p) => format!(
-                    "PID {} {} parent={:?} path={:?}",
-                    p.pid, p.name, p.parent_pid, p.path
-                ),
-                RecordData::Packet(p) => format!(
-                    "{} {:?}:{:?} → {:?}:{:?} {} bytes {:?}",
-                    p.protocol,
-                    p.source,
-                    p.source_port,
-                    p.destination,
-                    p.destination_port,
-                    p.original_bytes,
-                    p.application
-                ),
-            }
+            "  {} [{}] {}\n    {}",
+            location(r),
+            match r.status {
+                ParseStatus::Parsed => "已解析",
+                ParseStatus::Unrecognized => "未识别",
+                ParseStatus::Malformed => "畸形记录",
+            },
+            r.timestamp.as_deref().unwrap_or("时间未知"),
+            record_summary(r)
         );
+        if raw {
+            let _ = writeln!(out, "    证据 ID：{}\n    原始内容：\n{}", r.id, r.raw);
+        }
     }
     if selected.len() > n {
         let _ = writeln!(
             out,
-            "  Displayed {n}/{} records; use --limit 0 or JSON/HTML for the full dataset.",
+            "  已显示 {n}/{} 条记录；-n 0 显示全部摘要，-R 显示原始内容，JSON/HTML 保留完整证据。",
             selected.len()
         );
     }
