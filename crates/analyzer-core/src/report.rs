@@ -312,32 +312,43 @@ pub fn terminal_with_raw(report: &AnalysisReport, limit: usize, tree: bool, raw:
         limit.min(selected.len())
     };
     for r in selected.iter().take(n) {
-        if let Some(found) = record_findings.get(r.id.as_str()) {
+        if raw {
+            if let Some(found) = record_findings.get(r.id.as_str()) {
+                let _ = writeln!(
+                    out,
+                    "  风险：{} · 规则：{}",
+                    found[0].severity.label(),
+                    found
+                        .iter()
+                        .map(|f| f.origin.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
             let _ = writeln!(
                 out,
-                "  风险：{} · 规则：{}",
-                found[0].severity.label(),
-                found
-                    .iter()
-                    .map(|f| f.origin.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                "  {} [{}] {}\n    {}",
+                location(r),
+                match r.status {
+                    ParseStatus::Parsed => "已解析",
+                    ParseStatus::Unrecognized => "未识别",
+                    ParseStatus::Malformed => "畸形记录",
+                },
+                r.timestamp.as_deref().unwrap_or("时间未知"),
+                record_summary(r)
             );
-        }
-        let _ = writeln!(
-            out,
-            "  {} [{}] {}\n    {}",
-            location(r),
-            match r.status {
-                ParseStatus::Parsed => "已解析",
-                ParseStatus::Unrecognized => "未识别",
-                ParseStatus::Malformed => "畸形记录",
-            },
-            r.timestamp.as_deref().unwrap_or("时间未知"),
-            record_summary(r)
-        );
-        if raw {
             let _ = writeln!(out, "    证据 ID：{}\n    原始内容：\n{}", r.id, r.raw);
+        } else {
+            out.push_str("  ");
+            if let Some(found) = record_findings.get(r.id.as_str()) {
+                let _ = write!(out, "[{}] ", found[0].severity.label());
+            }
+            match r.status {
+                ParseStatus::Parsed => {}
+                ParseStatus::Unrecognized => out.push_str("[未识别] "),
+                ParseStatus::Malformed => out.push_str("[畸形记录] "),
+            }
+            let _ = writeln!(out, "{}", record_summary(r));
         }
     }
     if selected.len() > n {
