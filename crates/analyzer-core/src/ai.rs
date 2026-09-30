@@ -37,7 +37,7 @@ impl Default for AiConfig {
             api_key: String::new(),
             api_key_env: String::new(),
             timeout_seconds: 300,
-            batch_bytes: 24_000,
+            batch_bytes: 65_536,
             max_output_tokens: 65_536,
             response_format: "json_object".into(),
             token_parameter: "max_tokens".into(),
@@ -190,8 +190,10 @@ fn batches(records: &[&Record], include_payload: bool, limit: usize) -> Result<V
         let n = serde_json::to_vec(&value)?.len() + 1;
         if n + 2 > limit {
             bail!(
-                "record {} exceeds AI batch_bytes; raise the limit or narrow the selected data; no record was truncated",
-                record.id
+                "AI 证据 {} 需要 {} 字节，超过 batch_bytes={}；请增大 config.toml 中的 batch_bytes，或缩小分析范围。",
+                record.position,
+                n + 2,
+                limit
             );
         }
         if size + n > limit && !batch.is_empty() {

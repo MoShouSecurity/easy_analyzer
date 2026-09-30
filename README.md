@@ -62,6 +62,7 @@ cat cases/auth.log | ./easy-analyzer logs - -f text
 | `-n N` | 终端记录显示数量，默认 50；`-n 0` 显示全部 |
 | `-R` | 显示发现详情、证据引用及原始记录 |
 | `-j PATH` / `-H PATH` | 导出完整 JSON / HTML 报告 |
+| `-o html` / `-O PATH` | 保存 HTML 报告 / 指定主输出路径；省略路径时自动生成 `report.html`，已有文件时另取名称 |
 | `-a` / `-S SCOPE` | 启用 AI / 指定发送范围：`all`、`matches`、`suspicious` |
 | `-P` | PCAP 的 AI 分析额外发送原始包及载荷 |
 
@@ -77,13 +78,15 @@ cat cases/auth.log | ./easy-analyzer logs - -f text
 ./easy-analyzer logs cases/Security.evtx -a -S suspicious
 ```
 
-其他服务可修改配置中的 `base_url`、`model` 和 `api_key`。默认请求超时为 300 秒，每批证据上限 24000 字节，输出 token 上限 65536，使用 `json_object` 和 `max_tokens`；`config show` 隐藏密钥。
+其他服务可修改配置中的 `base_url`、`model` 和 `api_key`。默认请求超时为 300 秒，每批证据上限 65536 字节，输出 token 上限 65536，使用 `json_object` 和 `max_tokens`；`config show` 隐藏密钥。
+
+`-n` 只控制终端显示数量；AI 默认分析全部记录，可用 `-S suspicious` 仅分析可疑项，或配合查询使用 `-S matches`。
 
 仅指定 `-a` 时发送证据，所选数据不会自动脱敏；PCAP 默认发送解析摘要，添加 `-P` 才发送原始包和载荷。
 
 ## 使用说明
 
-终端默认按风险级别汇总发现，并显示关键字段；`-R` 展开详情，JSON/HTML 始终保留完整记录和发现。规则命中是待核查线索，不代表攻击已成功。
+终端默认按风险级别汇总发现，并显示关键字段；`-R` 展开详情，JSON/HTML 始终保留完整记录和发现。导出后会提示保存位置，来源或 AI 分析失败时会显示具体诊断并保留已完成的结果。规则命中是待核查线索，不代表攻击已成功。
 
 macOS 请手动导入离线日志，`-l` 仅适用于 Windows/Linux；utmp/wtmp/btmp 支持 Linux glibc x64 常见布局。当前不支持实时抓包、TCP 重组或 TLS 解密，GUI 后续开发。
 

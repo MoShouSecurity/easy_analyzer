@@ -201,14 +201,14 @@ pub struct CommonArgs {
         default_value = "text",
         value_name = "TYPE",
         help_heading = "报告输出",
-        help = "主输出格式：text=终端摘要，json/html=完整报告"
+        help = "主输出格式：text=终端摘要，json=完整 JSON，html=保存完整 HTML 文件"
     )]
     output: Output,
     #[arg(
         long,
         value_name = "PATH",
         help_heading = "报告输出",
-        help = "主输出保存到文件；省略时写到终端标准输出"
+        help = "主输出文件路径；省略时 text/json 输出到终端，html 自动保存为 report.html（已有文件时另取名称）"
     )]
     out: Option<PathBuf>,
     #[arg(

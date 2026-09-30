@@ -21,12 +21,39 @@ fn write_output(path: Option<&Path>, data: &str) -> Result<()> {
             fs::create_dir_all(parent)?;
         }
         fs::write(path, data).with_context(|| format!("无法写入报告 {}", path.display()))?;
+        eprintln!("报告已保存：{}", path.display());
     } else {
         let mut stdout = io::stdout().lock();
         stdout.write_all(data.as_bytes())?;
         stdout.write_all(b"\n")?;
     }
     Ok(())
+}
+fn save_html_auto(data: &str) -> Result<PathBuf> {
+    for index in 1..=10_000 {
+        let path = PathBuf::from(if index == 1 {
+            "report.html".to_owned()
+        } else {
+            format!("report-{index}.html")
+        });
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                file.write_all(data.as_bytes())
+                    .with_context(|| format!("无法写入报告 {}", path.display()))?;
+                eprintln!("报告已保存：{}", path.display());
+                return Ok(path);
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(error).with_context(|| format!("无法创建报告 {}", path.display()));
+            }
+        }
+    }
+    bail!("无法自动分配 HTML 报告文件名，请用 -O 指定输出路径。")
 }
 fn resolved_path(path: &Path) -> Result<PathBuf> {
     let absolute = if path.is_absolute() {
@@ -130,6 +157,9 @@ fn run(cli: Cli) -> Result<bool> {
     }
     if matches!(args.ai_scope, AiScope::Matches) && args.query.is_none() && !args.suspicious {
         bail!("--ai-scope matches 需要同时提供 --query 或 --suspicious");
+    }
+    if matches!(args.output, Output::Html) && args.out.is_none() {
+        args.out = args.html_out.take();
     }
     validate_outputs(&args, &config_path)?;
     if args.files.iter().filter(|p| p.as_os_str() == "-").count() > 1 {
@@ -317,13 +347,45 @@ fn run(cli: Cli) -> Result<bool> {
         Output::Json => json.context("无法生成 JSON 报告")?,
         Output::Html => report::html(&report),
     };
-    write_output(args.out.as_deref(), &output)?;
+    if matches!(args.output, Output::Html) && args.out.is_none() {
+        save_html_auto(&output)?;
+    } else {
+        write_output(args.out.as_deref(), &output)?;
+    }
     success &= !report
         .diagnostics
         .iter()
         .any(|d| d.level == analyzer_core::DiagnosticLevel::Error);
     if !success {
-        eprintln!("分析已完成，但部分来源或 AI 分析失败；请查看报告中的诊断信息。");
+        if matches!(args.output, Output::Text) && args.out.is_none() {
+            eprintln!("分析部分完成，错误原因见上方诊断。");
+        } else {
+            eprintln!("分析部分完成，具体原因：");
+            let errors: Vec<_> = report
+                .diagnostics
+                .iter()
+                .filter(|d| d.level == analyzer_core::DiagnosticLevel::Error)
+                .collect();
+            let shown = if args.limit == 0 {
+                errors.len()
+            } else {
+                errors.len().min(args.limit)
+            };
+            for diagnostic in errors.iter().take(shown) {
+                let position = diagnostic
+                    .position
+                    .as_ref()
+                    .map(|p| format!("/{p}"))
+                    .unwrap_or_default();
+                eprintln!(
+                    "  {}{}：{}",
+                    diagnostic.source, position, diagnostic.message
+                );
+            }
+            if errors.len() > shown || errors.is_empty() {
+                eprintln!("完整原因见报告中的诊断信息。");
+            }
+        }
     }
     Ok(success)
 }
