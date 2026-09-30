@@ -158,12 +158,11 @@ pub fn init_config(path: &Path) -> Result<()> {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+// Providers may append explanatory fields; required fields and types stay enforced.
 struct AiResponse {
     findings: Vec<AiFinding>,
 }
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct AiFinding {
     severity: Severity,
     title: String,
@@ -432,7 +431,7 @@ mod tests {
         assert!(!safe.contains("secret"));
         assert!(evidence_value(&r, true).to_string().contains("secret"));
         assert!(validate(r#"{"findings":[{"severity":"high","title":"test","description":"test","evidence_ids":["fake"],"confidence":0.8,"recommendations":[]}]}"#,&HashSet::from([r.id])).is_err());
-        assert!(validate(r#"{"findings":[],"extra":1}"#, &HashSet::new()).is_err());
+        assert!(validate(r#"{"findings":[],"extra":1}"#, &HashSet::new()).is_ok());
     }
     fn mock(
         status: &str,

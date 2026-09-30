@@ -139,6 +139,7 @@ pub fn system_prompt(records: &[&Record], include_payload: bool) -> String {
     prompt.push_str(
         "\n输出要求：只返回 JSON 对象，不使用 Markdown 或额外文字。对象必须包含 findings 数组。\n\
         每项必须包含 severity（info/low/medium/high/critical）、title、description、evidence_ids（当前批次实际证据编号组成的非空数组）、confidence（0 到 1 的数字）、recommendations（字符串数组）。\n\
+        顶层只使用 findings，每项只使用上述六个字段；置信度依据写入 description，不另加 confidence_note 等字段。\n\
         title、description、recommendations 使用中文；严重度和置信度须与证据强度相符，高风险结论需要明确依据。\n\
         没有证据支持的可疑项或未提供任何证据时，返回 {\"findings\":[]}。",
     );
