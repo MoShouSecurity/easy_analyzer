@@ -1,9 +1,6 @@
-name: build-and-test
+name: manual-build-and-package
+# 仅在用户明确要求发布 Releases 时手动触发；推送源码和标签不触发构建。
 on:
-  push:
-    branches: ['**']
-    tags: ['v*']
-  pull_request:
   workflow_dispatch:
 permissions:
   contents: read
