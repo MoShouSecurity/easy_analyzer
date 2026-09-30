@@ -13,7 +13,7 @@ cargo run -- analyze tests/fixtures/auth.log tests/fixtures/processes.json tests
 
 发布包包含 `samples` 合成样本，可运行 `easy-analyzer analyze samples/auth.log samples/processes.json samples/sample.pcap` 查看效果。
 
-Windows 可执行文件为 `target/release/easy-analyzer.exe`；Linux/macOS 为 `target/release/easy-analyzer`。macOS 发布包为 arm64 二进制，使用方式见 [macOS 指南](docs/MACOS.md)；开发者可运行 `bash tools/package-macos.sh` 构建发布包（需要 `aarch64-apple-darwin` Rust target、Xcode 命令行工具及 Python 3）。
+Windows 可执行文件为 `target/release/easy-analyzer.exe`；Linux/macOS 为 `target/release/easy-analyzer`。macOS 发布包为 arm64 二进制，使用方式见 [macOS 指南](docs/MACOS.md)；开发者可运行 `bash tools/package-macos.sh`，直接生成 `dist/easy-analyzer-<版本>-macos-arm64/` 程序目录（需要 `aarch64-apple-darwin` Rust target和 Xcode 命令行工具）。
 
 ## 输入和分析
 

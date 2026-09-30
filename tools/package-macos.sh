@@ -10,13 +10,14 @@ fi
 
 VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
 PACKAGE_NAME="easy-analyzer-${VERSION}-macos-arm64"
+PACKAGE_DIR="$PROJECT_ROOT/dist/$PACKAGE_NAME"
 BUILD_ROOT="${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}"
 if [[ "$BUILD_ROOT" != /* ]]; then BUILD_ROOT="$PROJECT_ROOT/$BUILD_ROOT"; fi
 
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
 cargo build --release --locked --target aarch64-apple-darwin
 
-# Build in a fresh directory so old packaging files never enter a new archive.
+# Stage generated files separately, then copy them into the program directory.
 mkdir -p "$PROJECT_ROOT/dist"
 STAGING="$(mktemp -d "$PROJECT_ROOT/dist/.macos-package.XXXXXX")"
 trap 'rm -rf "$STAGING"' EXIT
@@ -46,22 +47,6 @@ chmod 755 "$STAGED_PACKAGE/演示.command"
   fi
 } > "$STAGED_PACKAGE/BUILD_INFO.txt"
 
-# Python preserves executable permissions and creates a portable UTF-8 ZIP.
-python3 - "$STAGED_PACKAGE" "$PROJECT_ROOT/dist/$PACKAGE_NAME.zip" <<'PY'
-import pathlib
-import sys
-import zipfile
-
-root, archive = map(pathlib.Path, sys.argv[1:])
-with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED) as out:
-    for path in sorted(root.rglob('*')):
-        if path.is_file():
-            out.write(path, pathlib.Path(root.name) / path.relative_to(root))
-PY
-tar -czf "$PROJECT_ROOT/dist/$PACKAGE_NAME.tar.gz" -C "$STAGING" "$PACKAGE_NAME"
-(
-  cd "$PROJECT_ROOT/dist"
-  shasum -a 256 "$PACKAGE_NAME.zip" > "$PACKAGE_NAME.zip.sha256"
-  shasum -a 256 "$PACKAGE_NAME.tar.gz" > "$PACKAGE_NAME.tar.gz.sha256"
-)
-echo "Created dist/$PACKAGE_NAME.zip and .tar.gz"
+mkdir -p "$PACKAGE_DIR"
+cp -R "$STAGED_PACKAGE/." "$PACKAGE_DIR/"
+echo "Created program directory: $PACKAGE_DIR"
