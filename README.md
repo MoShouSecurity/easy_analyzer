@@ -8,7 +8,7 @@ Rust 开发的应急响应分析 CLI，支持 Windows/Linux x64 和 macOS Apple 
 - **可疑项筛查**：默认启用 53 项日志规则，按高危、中危、低危展示，覆盖登录异常、账号与权限变更、审计异常和常见 Web 攻击特征；支持关键词和正则查询。
 - **进程分析**：采集本机进程或导入 JSON 快照，查看名称、路径、命令行、父子关系和可疑进程。
 - **流量分析**：导入 PCAP/PCAPNG，查看网络端点、协议、会话及 HTTP/DNS/TLS 元数据。
-- **AI 分析**：接入自定义 OpenAI 兼容服务，按全部数据、筛选结果或可疑项分批分析，返回严重度、说明、证据引用、置信度和建议。
+- **AI 分析**：接入自定义 OpenAI 兼容服务，将解析后的证据整理为文本，按日志、进程或流量场景自动生成提示词，返回严重度、说明、证据引用、置信度和建议。
 - **导入与报告**：支持多个文件、标准输入和 Windows/Linux 本机常见日志路径加载；终端默认显示简洁摘要，可导出保留完整证据的 JSON、HTML 报告。
 
 ## CLI 命令
@@ -78,9 +78,11 @@ cat cases/auth.log | ./easy-analyzer logs - -f text
 ./easy-analyzer logs cases/Security.evtx -a -S suspicious
 ```
 
-其他服务可修改配置中的 `base_url`、`model` 和 `api_key`。默认请求超时为 300 秒，每批证据上限 65536 字节，输出 token 上限 65536，使用 `json_object` 和 `max_tokens`；`config show` 隐藏密钥。
+其他服务可修改配置中的 `base_url`、`model` 和 `api_key`。默认请求超时为 300 秒，每批证据文本上限 65536 字节（不含提示词和传输编码），输出 token 上限 65536，使用 `json_object` 和 `max_tokens`；`config show` 隐藏密钥。
 
 `-n` 只控制终端显示数量；AI 默认分析全部记录，可用 `-S suspicious` 仅分析可疑项，或配合查询使用 `-S matches`。
+
+AI 输入是本地解析后带证据编号的文本，通过 Chat Completions 接口发送。system 提示词根据 Windows 事件、Linux 登录/SSH、Web、进程、网络及混合场景自动组合；结果会校验证据编号和 JSON 结构。
 
 仅指定 `-a` 时发送证据，所选数据不会自动脱敏；PCAP 默认发送解析摘要，添加 `-P` 才发送原始包和载荷。
 
