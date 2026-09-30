@@ -11,11 +11,14 @@ use std::{
     time::Duration,
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AiConfig {
     pub base_url: String,
     pub model: String,
+    pub api_key: String,
+    /// Legacy configurations may still explicitly select an environment variable.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub api_key_env: String,
     pub timeout_seconds: u64,
     /// Byte budget for each serialized evidence array, not a token estimate.
@@ -31,7 +34,8 @@ impl Default for AiConfig {
         Self {
             base_url: "https://api.deepseek.com".into(),
             model: "deepseek-flash".into(),
-            api_key_env: "DEEPSEEK_API_KEY".into(),
+            api_key: String::new(),
+            api_key_env: String::new(),
             timeout_seconds: 300,
             batch_bytes: 24_000,
             max_output_tokens: 65_536,
@@ -40,13 +44,57 @@ impl Default for AiConfig {
         }
     }
 }
+impl std::fmt::Debug for AiConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AiConfig")
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("api_key", &"[redacted]")
+            .field("api_key_env", &"[redacted]")
+            .field("timeout_seconds", &self.timeout_seconds)
+            .field("batch_bytes", &self.batch_bytes)
+            .field("max_output_tokens", &self.max_output_tokens)
+            .field("response_format", &self.response_format)
+            .field("token_parameter", &self.token_parameter)
+            .finish()
+    }
+}
 impl AiConfig {
     pub fn load(path: &Path) -> Result<Self> {
-        let config: Self = toml::from_str(&fs::read_to_string(path).with_context(|| {
+        let text = fs::read_to_string(path).with_context(|| {
             format!("cannot read AI config {} (run config init)", path.display())
-        })?)?;
+        })?;
+        let config: Self = toml::from_str(&text).map_err(|error: toml::de::Error| {
+            let line = error.span().map_or(1, |span| {
+                text.bytes()
+                    .take(span.start)
+                    .filter(|b| *b == b'\n')
+                    .count()
+                    + 1
+            });
+            anyhow::anyhow!(
+                "AI 配置文件 TOML 格式或字段不正确（第 {line} 行）：{}；字符串值需要用双引号包围。",
+                path.display()
+            )
+        })?;
         config.validate()?;
         Ok(config)
+    }
+    fn resolved_api_key(&self) -> Result<Option<String>> {
+        let key = if !self.api_key.trim().is_empty() {
+            Some(self.api_key.trim().to_owned())
+        } else if !self.api_key_env.is_empty() {
+            std::env::var(&self.api_key_env)
+                .ok()
+                .map(|key| key.trim().to_owned())
+                .filter(|key| !key.is_empty())
+        } else {
+            None
+        };
+        if key.is_none() && self.endpoint()?.host_str() == Some("api.deepseek.com") {
+            bail!("请在 config.toml 的 api_key 字段填写 DeepSeek API 密钥。");
+        }
+        Ok(key)
     }
     pub fn validate(&self) -> Result<()> {
         let _ = self.endpoint()?;
@@ -257,9 +305,7 @@ pub fn analyze(
     if records.is_empty() {
         bail!("no evidence selected for AI analysis");
     }
-    let key = std::env::var(&config.api_key_env)
-        .ok()
-        .filter(|s| !s.trim().is_empty());
+    let key = config.resolved_api_key()?;
     let client = Client::builder()
         .timeout(Duration::from_secs(config.timeout_seconds))
         .redirect(Policy::none())
@@ -310,7 +356,7 @@ pub fn check(config: &AiConfig) -> Result<()> {
         .timeout(Duration::from_secs(config.timeout_seconds))
         .redirect(Policy::none())
         .build()?;
-    let key = std::env::var(&config.api_key_env).ok();
+    let key = config.resolved_api_key()?;
     let response = request(
         &client,
         config,

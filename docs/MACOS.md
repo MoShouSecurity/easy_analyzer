@@ -47,12 +47,12 @@ CLI 默认将发现按风险分组显示命中数量和规则名称，每条记�
 
 ```sh
 ./easy-analyzer config init
-# 默认使用 DeepSeek deepseek-flash；其他服务可编辑当前目录的 config.toml
-export DEEPSEEK_API_KEY='your-key'
+# 编辑当前目录的 config.toml，填写 api_key = "你的密钥"
+# 默认使用 DeepSeek deepseek-flash
 ./easy-analyzer logs /path/to/Security.evtx -a -S suspicious
 ```
 
-默认在当前工作目录创建和读取 `config.toml`；从 `dist/` 运行时配置就在 `dist/config.toml`，也可用 `-c` 指定其他位置。AI 仅在显式调用时发送所选数据。配置和 CLI 选项详见包中的 `README.md`。
+默认在当前工作目录创建和读取 `config.toml`；从 `dist/` 运行时配置就在 `dist/config.toml`，密钥填写到 `api_key` 后持久保存，也可用 `-c` 指定其他位置。AI 仅在显式调用时发送所选数据。配置和 CLI 选项详见包中的 `README.md`。
 
 ## 发布包信息
 

@@ -1,5 +1,11 @@
 # 更新记录
 
+## 0.1.11 — 2026-09-30
+
+- 默认通过当前目录 `config.toml` 的 `api_key` 字段持久保存和读取密钥，文件密钥优先；旧 `api_key_env` 配置仍可兼容。
+- `config show` 和调试输出隐藏密钥，配置格式错误不回显原始配置行。
+- DeepSeek 未配置密钥时在请求前给出中文提示，配置帮助与文档同步更新。
+
 ## 0.1.10 — 2026-09-30
 
 - AI 默认配置使用 DeepSeek 官方 API、`deepseek-flash` 模型和 `DEEPSEEK_API_KEY` 环境变量。

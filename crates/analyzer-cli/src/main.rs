@@ -97,7 +97,7 @@ fn run(cli: Cli) -> Result<bool> {
                 ConfigCommand::Init => {
                     ai::init_config(&config_path)?;
                     println!(
-                        "已创建配置 {}\n默认使用 DeepSeek deepseek-flash，请设置 DEEPSEEK_API_KEY 环境变量；其他服务可修改 base_url/model/api_key_env。",
+                        "已创建配置 {}\n默认使用 DeepSeek deepseek-flash，请在配置文件中填写 api_key；其他服务可修改 base_url/model。",
                         config_path.display()
                     );
                 }
@@ -328,7 +328,14 @@ fn run(cli: Cli) -> Result<bool> {
     Ok(success)
 }
 fn toml_config(c: &ai::AiConfig) -> String {
-    serde_json::to_string_pretty(c).unwrap_or_default()
+    let mut visible = c.clone();
+    if !visible.api_key.is_empty() {
+        visible.api_key = "[已配置，密钥已隐藏]".into();
+    }
+    if visible.api_key_env.starts_with("sk-") {
+        visible.api_key_env = "[密钥已隐藏，请改用 api_key]".into();
+    }
+    serde_json::to_string_pretty(&visible).unwrap_or_default()
 }
 fn main() -> ExitCode {
     let matches = match cli::command().try_get_matches() {
