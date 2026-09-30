@@ -104,4 +104,4 @@ macOS 请手动导入离线日志，`-l` 仅适用于 Windows/Linux；utmp/wtmp/
 
 GitHub 推送只同步源码，不自动构建、打包或发布。仅在明确要求“发布 Releases”时手动执行构建、打包和发布。
 
-发布附件仅包含 Windows x64、Linux x64、macOS ARM64 三个独立程序及 `SHA256SUMS`，不附文档、样本或压缩包。
+[Releases](https://github.com/MoShouSecurity/easy_analyzer/releases) 附件仅包含 Windows x64、Linux x64、macOS ARM64 三个独立程序及 `SHA256SUMS`，不附文档、样本或压缩包。

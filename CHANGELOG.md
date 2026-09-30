@@ -1,5 +1,12 @@
 # 更新记录
 
+## 1.0.0 — 2026-09-30
+
+- 首次正式 Releases 发布，仓库位于 MoShouSecurity/easy_analyzer。
+- 支持 Windows/Linux 登录日志、Apache/Nginx、自定义 Web 格式、进程快照及离线 PCAP/PCAPNG 分析。
+- 支持本地规则、关键词查询、场景化 AI 分析及终端、JSON、响应式 HTML 报告。
+- 发布 Windows x64、Linux x64、macOS ARM64 三个独立程序和 SHA256SUMS。
+
 ## 0.1.18 — 2026-09-30
 
 - 默认 AI 每批证据文本上限提高到 96 KiB（98304 字节），配置项仍为 batch_bytes，可继续调大。
