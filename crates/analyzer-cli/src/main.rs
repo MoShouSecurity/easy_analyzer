@@ -77,10 +77,7 @@ fn validate_outputs(args: &AnalysisArgs, config_path: &Path) -> Result<()> {
     {
         let resolved = resolved_path(path)?;
         if inputs.contains(&resolved) || resolved == config {
-            bail!(
-                "报告输出会覆盖输入文件或配置：{}",
-                path.display()
-            );
+            bail!("报告输出会覆盖输入文件或配置：{}", path.display());
         }
         if !outputs.insert(resolved) {
             bail!("各个报告输出路径必须不同");
@@ -292,10 +289,7 @@ fn run(cli: Cli) -> Result<bool> {
                 && source.path != "stdin"
                 && resolved_path(Path::new(&source.path))? == resolved
             {
-                bail!(
-                    "报告输出会覆盖已采集的证据：{}",
-                    path.display()
-                );
+                bail!("报告输出会覆盖已采集的证据：{}", path.display());
             }
         }
     }
