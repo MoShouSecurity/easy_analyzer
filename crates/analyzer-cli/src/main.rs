@@ -1,8 +1,11 @@
+mod cli;
+
 use analyzer_core::{
     AnalysisReport, IngestOptions, InputFormat, RecordData, ai, collect, report, rules,
 };
 use anyhow::{Context, Result, bail};
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::FromArgMatches;
+use cli::{AiScope, AnalysisArgs, Cli, Command, ConfigCommand, Output};
 use std::{
     collections::HashSet,
     fs,
@@ -11,119 +14,6 @@ use std::{
     process::ExitCode,
 };
 
-#[derive(Parser)]
-#[command(
-    version,
-    about = "Rust 应急响应分析工具：日志、进程和离线 PCAP",
-    long_about = "日志/进程/PCAP 证据分析。所有输入均在本地解析；只有显式指定 --ai 才发送数据到配置的服务。"
-)]
-struct Cli {
-    #[arg(long, global = true, help = "AI 配置路径；默认位于用户配置目录")]
-    config: Option<PathBuf>,
-    #[command(subcommand)]
-    command: Command,
-}
-#[derive(Subcommand)]
-enum Command {
-    /// 自动识别多个文件并路由到日志、进程或流量模块
-    Analyze(AnalysisArgs),
-    /// 日志分析；--auto-load 读取本机常见日志路径
-    Logs(AnalysisArgs),
-    /// 进程快照分析；不提供文件时采集本机进程
-    Processes(AnalysisArgs),
-    /// PCAP/PCAPNG 离线分析
-    Pcap(AnalysisArgs),
-    /// 配置模板、查看设置或检查 AI 服务
-    Config {
-        #[command(subcommand)]
-        command: ConfigCommand,
-    },
-}
-#[derive(Subcommand)]
-enum ConfigCommand {
-    Init,
-    Show,
-    Check,
-}
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum Output {
-    Text,
-    Json,
-    Html,
-}
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum AiScope {
-    All,
-    Matches,
-    Suspicious,
-}
-#[derive(Args)]
-struct AnalysisArgs {
-    /// 输入文件；支持多个文件混合分析
-    files: Vec<PathBuf>,
-    #[arg(
-        long,
-        default_value = "auto",
-        help = "auto/evtx/utmp/wtmp/btmp/web/text/processes/pcap"
-    )]
-    format: InputFormat,
-    #[arg(
-        long,
-        conflicts_with = "web_format_file",
-        help = "Apache LogFormat / Nginx log_format 定义或格式字符串"
-    )]
-    web_format: Option<String>,
-    #[arg(long, help = "从文件读取服务格式定义")]
-    web_format_file: Option<PathBuf>,
-    #[arg(long, help = "加载本机常见日志；Windows 通过 wevtutil 导出")]
-    auto_load: bool,
-    #[arg(long, help = "采集当前主机进程")]
-    live_processes: bool,
-    #[arg(
-        long,
-        default_value = "cases/captured",
-        help = "Windows 本机事件日志导出的保留目录"
-    )]
-    evidence_dir: PathBuf,
-    #[arg(long, help = "查询关键词（默认不区分大小写）")]
-    query: Option<String>,
-    #[arg(long, requires = "query", help = "将 --query 解释为正则表达式")]
-    regex: bool,
-    #[arg(long, help = "终端显示所有本地规则匹配的证据记录")]
-    suspicious: bool,
-    #[arg(long, help = "显示进程树")]
-    tree: bool,
-    #[arg(long, help = "将选定证据直接发送到已配置的 AI 服务")]
-    ai: bool,
-    #[arg(
-        long,
-        value_enum,
-        default_value = "all",
-        requires = "ai",
-        help = "AI 分析范围"
-    )]
-    ai_scope: AiScope,
-    #[arg(
-        long,
-        requires = "ai",
-        help = "AI 请求包含原始包和载荷；默认只发送解析后的包摘要"
-    )]
-    include_payload: bool,
-    #[arg(long, value_enum, default_value = "text")]
-    output: Output,
-    #[arg(long, help = "主输出文件；省略时写到 stdout")]
-    out: Option<PathBuf>,
-    #[arg(long, help = "同时保存完整 JSON 报告")]
-    json_out: Option<PathBuf>,
-    #[arg(long, help = "同时保存完整 HTML 报告")]
-    html_out: Option<PathBuf>,
-    #[arg(long, default_value_t = 50, help = "终端显示记录/诊断数量；0 表示全部")]
-    limit: usize,
-    #[arg(long, default_value_t = 512, help = "每个输入文件大小上限 MiB")]
-    max_file_mb: u64,
-    #[arg(long, default_value_t = 1_000_000)]
-    max_records: usize,
-}
 fn write_output(path: Option<&Path>, data: &str) -> Result<()> {
     if let Some(path) = path {
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
@@ -200,10 +90,10 @@ fn validate_outputs(args: &AnalysisArgs, config_path: &Path) -> Result<()> {
 fn run(cli: Cli) -> Result<bool> {
     let config_path = cli.config.unwrap_or_else(ai::default_config_path);
     let (mut args, kind) = match cli.command {
-        Command::Analyze(a) => (a, "analyze"),
-        Command::Logs(a) => (a, "logs"),
-        Command::Processes(a) => (a, "processes"),
-        Command::Pcap(a) => (a, "pcap"),
+        Command::Analyze(a) => (AnalysisArgs::from(a), "analyze"),
+        Command::Logs(a) => (AnalysisArgs::from(a), "logs"),
+        Command::Processes(a) => (AnalysisArgs::from(a), "processes"),
+        Command::Pcap(a) => (AnalysisArgs::from(a), "pcap"),
         Command::Config { command } => {
             match command {
                 ConfigCommand::Init => {
@@ -434,7 +324,9 @@ fn toml_config(c: &ai::AiConfig) -> String {
     serde_json::to_string_pretty(c).unwrap_or_default()
 }
 fn main() -> ExitCode {
-    match run(Cli::parse()) {
+    let matches = cli::command().get_matches();
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
+    match run(cli) {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
         Err(e) => {

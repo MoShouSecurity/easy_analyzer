@@ -17,6 +17,26 @@ Windows 可执行文件为 `target/release/easy-analyzer.exe`；Linux/macOS 为 
 
 ## 输入和分析
 
+先选择命令，再查看对应帮助。`-h` 和 `--help` 都包含参数分组、输入说明与示例。
+
+| 要做的事 | 命令 |
+| --- | --- |
+| 分析日志 | `logs` |
+| 采集当前主机进程，或导入进程 JSON 快照 | `processes` |
+| 分析已有 PCAP/PCAPNG | `pcap` |
+| 自动识别文件，混合多种证据或同时采集进程 | `analyze` |
+| 创建、查看或检查 AI 配置 | `config` |
+
+```sh
+easy-analyzer -h
+easy-analyzer logs -h
+easy-analyzer processes -h
+easy-analyzer pcap -h
+easy-analyzer config -h
+```
+
+各命令只接受对应模块的参数。`logs --format` 限定为日志格式；`processes` 固定读取进程 JSON，`pcap` 固定读取抓包文件。需要同时导入日志和采集进程时使用 `analyze --live-processes`。`--include-payload` 仅适用于 `pcap/analyze` 的 AI 分析。`--ai-scope matches` 必须同时提供 `--query` 或 `--suspicious`。
+
 ```sh
 # 多种证据混合导入，自动识别并分类
 easy-analyzer analyze cases/Security.evtx cases/wtmp cases/access.log cases/processes.json cases/capture.pcap

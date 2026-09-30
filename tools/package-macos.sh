@@ -27,7 +27,7 @@ chmod 755 "$STAGED_PACKAGE/easy-analyzer"
 codesign --force --sign - "$STAGED_PACKAGE/easy-analyzer"
 codesign --verify --strict "$STAGED_PACKAGE/easy-analyzer"
 lipo "$STAGED_PACKAGE/easy-analyzer" -verify_arch arm64
-cp README.md LICENSE "$STAGED_PACKAGE/"
+cp README.md LICENSE CHANGELOG.md "$STAGED_PACKAGE/"
 cp docs/MACOS.md docs/VALIDATION.md "$STAGED_PACKAGE/docs/"
 cp docs/MACOS.md "$STAGED_PACKAGE/开始使用.md"
 cp -R tests/fixtures "$STAGED_PACKAGE/samples"

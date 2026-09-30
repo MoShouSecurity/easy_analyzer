@@ -1,6 +1,15 @@
 # 当前验证记录
 
-2026-09-30，在 macOS ARM64 开发环境完成以下验证：
+2026-09-30，在 macOS ARM64 开发环境完成以下验证。
+
+## 0.1.1 CLI 帮助调整
+
+- 顶层、四个分析命令、config 及三个配置子命令的 `-h` / `--help` 内容一致，包含中文用法说明；分析命令提供参数分组和示例，config 提供配置步骤。
+- 11 种缺少输入、无关选项或依赖条件不足的用法正确返回退出码 2。四个分析入口与本机进程采集可执行。
+- `cargo test --workspace --locked --offline` 的现有 32 项测试全部通过；格式检查和 Clippy 检查通过。
+- 0.1.1 发布包仅提供 macOS arm64；Windows/Linux 交叉构建记录属于下方的 0.1.0 验证。
+
+## 0.1.0 基线验证
 
 - `cargo clippy --workspace --all-targets --offline -- -D warnings` 通过。
 - `cargo test --workspace --locked --offline`：32 项测试全部通过，包括合成 EVTX、Linux 登录记录、混合来源、PCAP/PCAPNG 大小端、时间精度、进程树及报告导入分组、CLI 管道/输出、AI 本地 HTTP 模拟服务、超时/错误响应与载荷选择。新增 CLI 回归用例验证当前主机混合导入 Windows/Linux 日志，保留全部 25 条原始记录。
