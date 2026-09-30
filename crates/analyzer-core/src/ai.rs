@@ -323,6 +323,16 @@ pub fn analyze(
     config: &AiConfig,
     include_payload: bool,
 ) -> Result<(Vec<Finding>, AiRun)> {
+    analyze_with_progress(records, config, include_payload, |_, _| {})
+}
+
+/// Calls `progress(index, total)` before each request, using one-based batch indices.
+pub fn analyze_with_progress(
+    records: &[&Record],
+    config: &AiConfig,
+    include_payload: bool,
+    mut progress: impl FnMut(usize, usize),
+) -> Result<(Vec<Finding>, AiRun)> {
     config.validate()?;
     if records.is_empty() {
         bail!("no evidence selected for AI analysis");
@@ -338,6 +348,7 @@ pub fn analyze(
     let mut findings = vec![];
     let mut seen = HashSet::new();
     for (i, batch) in batches.into_iter().enumerate() {
+        progress(i + 1, count);
         let allowed: HashSet<String> = batch.iter().map(|record| record.id.clone()).collect();
         let mut user = format!(
             "当前批次 batch: {}\n总批次 total_batches: {}\n当前批次记录数: {}\n包含网络原始包及载荷: {}\n\n",

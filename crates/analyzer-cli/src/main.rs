@@ -1,5 +1,6 @@
 mod cli;
 mod diagnostics;
+mod progress;
 
 use analyzer_core::{
     AnalysisReport, IngestOptions, InputFormat, RecordData, ai, collect, report, rules,
@@ -296,8 +297,13 @@ fn run(cli: Cli) -> Result<bool> {
                 AiScope::Suspicious => suspicious.contains(&r.id),
             })
             .collect();
-        let ai_result = ai::AiConfig::load(&config_path)
-            .and_then(|config| ai::analyze(&selected, &config, args.include_payload));
+        let progress = progress::AiProgress::start();
+        let ai_result = ai::AiConfig::load(&config_path).and_then(|config| {
+            ai::analyze_with_progress(&selected, &config, args.include_payload, |index, total| {
+                progress.batch(index, total);
+            })
+        });
+        progress.finish(ai_result.is_ok());
         match ai_result {
             Ok((findings, run)) => {
                 report.findings.extend(findings);

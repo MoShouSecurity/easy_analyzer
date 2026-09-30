@@ -82,6 +82,8 @@ cat cases/auth.log | ./easy-analyzer logs - -f text
 
 `-n` 只控制终端显示数量；AI 默认分析全部记录，可用 `-S suspicious` 仅分析可疑项，或配合查询使用 `-S matches`。
 
+终端中启用 `-a` 后显示分析动画、当前批次和耗时，结束后提示完成或失败；动画写入标准错误，重定向标准错误时自动关闭。
+
 AI 输入是本地解析后带证据编号的文本，通过 Chat Completions 接口发送。system 提示词根据 Windows 事件、Linux 登录/SSH、Web、进程、网络及混合场景自动组合；结果会校验证据编号和 JSON 结构。
 
 仅指定 `-a` 时发送证据，所选数据不会自动脱敏；PCAP 默认发送解析摘要，添加 `-P` 才发送原始包和载荷。
