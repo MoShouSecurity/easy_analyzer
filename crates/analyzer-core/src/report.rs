@@ -216,6 +216,22 @@ pub fn terminal_with_raw(report: &AnalysisReport, limit: usize, tree: bool, raw:
         let _ = write!(out, "  ·  诊断 {}", report.diagnostics.len());
     }
     out.push('\n');
+    for run in &report.ai_runs {
+        let _ = writeln!(
+            out,
+            "AI {} · {} · 已完成 {}/{} 批次 · 已验证 {}/{} 条记录",
+            if run.is_complete() {
+                "分析完成"
+            } else {
+                "分析未完成"
+            },
+            run.model,
+            run.completed(),
+            run.batches,
+            run.analyzed_records,
+            run.selected()
+        );
+    }
     for (index, s) in report.sources.iter().enumerate() {
         let _ = write!(
             out,
@@ -472,6 +488,29 @@ pub fn escape(s: &str) -> String {
 fn pre(s: &str) -> String {
     format!("<pre>{}</pre>", escape(s))
 }
+fn html_findings(out: &mut String, findings: &[&Finding]) {
+    for f in findings {
+        let sev = serde_json::to_value(&f.severity).unwrap();
+        let _ = write!(
+            out,
+            "<article class=\"{}\"><h3>[{}] {}</h3><small>{} · 置信度 {:.2}</small><p>{}</p><p>证据：",
+            sev.as_str().unwrap(),
+            f.severity.label(),
+            escape(&f.title),
+            escape(&f.origin),
+            f.confidence,
+            escape(&f.description)
+        );
+        for id in &f.evidence_ids {
+            let _ = write!(out, "<a href=\"#{}\">{}</a> ", escape(id), escape(id));
+        }
+        out.push_str("</p><ul>");
+        for recommendation in &f.recommendations {
+            let _ = write!(out, "<li>{}</li>", escape(recommendation));
+        }
+        out.push_str("</ul></article>");
+    }
+}
 pub fn html(report: &AnalysisReport) -> String {
     let mut out = String::from(
         r#"<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; base-uri 'none'; form-action 'none'"><title>Easy Analyzer 应急响应报告</title><style>
@@ -512,45 +551,96 @@ body{font:15px/1.65 system-ui,sans-serif;color:#203046;background:#edf2f6;margin
     if report.findings.is_empty() {
         out.push_str("<section>未产生分析发现。未发现规则匹配不能证明主机安全。</section>");
     }
-    for f in findings {
-        let sev = serde_json::to_value(&f.severity)
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .to_owned();
-        let _ = write!(
-            out,
-            "<article class=\"{}\"><h3>[{}] {}</h3><small>{} · 置信度 {:.2}</small><p>{}</p><p>证据：",
-            sev,
-            f.severity.label(),
-            escape(&f.title),
-            escape(&f.origin),
-            f.confidence,
-            escape(&f.description)
-        );
-        for id in &f.evidence_ids {
-            let _ = write!(out, "<a href=\"#{}\">{}</a> ", escape(id), escape(id));
-        }
-        out.push_str("</p><ul>");
-        for recommendation in &f.recommendations {
-            let _ = write!(out, "<li>{}</li>", escape(recommendation));
-        }
-        out.push_str("</ul></article>");
+    let (ai_findings, local_findings): (Vec<_>, Vec<_>) = findings
+        .into_iter()
+        .partition(|finding| finding.origin.starts_with("ai:"));
+    out.push_str("<h2>本地规则分析</h2>");
+    if local_findings.is_empty() {
+        out.push_str("<section>本地规则未产生发现。</section>");
     }
-    if !report.ai_runs.is_empty() {
-        out.push_str("<h2>AI 分析范围</h2><section>");
+    html_findings(&mut out, &local_findings);
+    if !report.ai_runs.is_empty()
+        || !ai_findings.is_empty()
+        || report.diagnostics.iter().any(|d| d.source == "AI")
+    {
+        out.push_str("<h2>AI 分析</h2><section>");
+        if report.ai_runs.is_empty() && ai_findings.is_empty() {
+            out.push_str("<p>AI 未生成可用结果，具体原因见诊断信息。</p>");
+        }
         for run in &report.ai_runs {
             let _ = write!(
                 out,
-                "<p>{} · {} · {} 批次 / {} 条记录 · 包含载荷：{}</p>",
+                "<p><strong>{}</strong> · {} · {}</p><p>已完成 {}/{} 批次，已验证 {}/{} 条记录；未完成批次不计入结论。包含载荷：{}</p>",
+                if run.is_complete() {
+                    "分析完成"
+                } else {
+                    "分析未完成（已完成结果已保留）"
+                },
                 escape(&run.model),
                 escape(&run.endpoint),
+                run.completed(),
                 run.batches,
                 run.analyzed_records,
+                run.selected(),
                 run.include_payload
             );
         }
+        let _ = write!(
+            out,
+            "<p>AI 发现 {} 项。{}</p>",
+            ai_findings.len(),
+            if ai_findings.is_empty() {
+                "已验证批次未产生可用发现；不代表全部证据均已分析或没有风险。"
+            } else {
+                "以下只展示通过结构和证据引用校验的结果。"
+            }
+        );
         out.push_str("</section>");
+        html_findings(&mut out, &ai_findings);
+        for run in &report.ai_runs {
+            if !run.batch_results.is_empty() {
+                out.push_str("<section><details><summary>AI 各批次原始回复与诊断</summary><p>未通过校验的回复仅供排查，不作为分析结论。</p>");
+                for batch in &run.batch_results {
+                    let _ = write!(
+                        out,
+                        "<details><summary>第 {}/{} 批 · {} · {} 条记录 · 请求 {} 次</summary>",
+                        batch.index,
+                        run.batches,
+                        if batch.error.is_none() {
+                            "已验证"
+                        } else {
+                            "失败"
+                        },
+                        batch.evidence_ids.len(),
+                        batch.attempts.len()
+                    );
+                    if let Some(error) = &batch.error {
+                        let _ = write!(out, "<p>{}</p>", escape(error));
+                    }
+                    for (index, attempt) in batch.attempts.iter().enumerate() {
+                        let _ = write!(
+                            out,
+                            "<details><summary>第 {} 次回复 · {}</summary>",
+                            index + 1,
+                            if attempt.error.is_none() {
+                                "已验证"
+                            } else {
+                                "未通过校验或请求失败"
+                            }
+                        );
+                        if let Some(error) = &attempt.error {
+                            let _ = write!(out, "<p>{}</p>", escape(error));
+                        }
+                        if let Some(response) = &attempt.response {
+                            out.push_str(&pre(response));
+                        }
+                        out.push_str("</details>");
+                    }
+                    out.push_str("</details>");
+                }
+                out.push_str("</details></section>");
+            }
+        }
     }
     let tree = process_tree(&report.records);
     if !tree.is_empty() {
@@ -583,7 +673,7 @@ body{font:15px/1.65 system-ui,sans-serif;color:#203046;background:#edf2f6;margin
         out.push_str("</section>");
     }
     if !report.diagnostics.is_empty() {
-        out.push_str("<h2>解析与采集诊断</h2><section><ul>");
+        out.push_str("<h2>解析、采集与 AI 诊断</h2><section><ul>");
         for d in &report.diagnostics {
             let _ = write!(
                 out,

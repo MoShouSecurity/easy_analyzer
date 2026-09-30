@@ -332,6 +332,29 @@ pub fn analyze_with_progress(
     include_payload: bool,
     mut progress: impl FnMut(usize, usize),
 ) -> Result<(Vec<Finding>, AiRun)> {
+    let result = analyze_report_with_progress(records, config, include_payload, |i, n, _| {
+        progress(i, n);
+    })?;
+    if let Some(error) = result.error {
+        bail!(error);
+    }
+    Ok((result.findings, result.run))
+}
+
+pub struct AiAnalysis {
+    pub findings: Vec<Finding>,
+    pub run: AiRun,
+    pub error: Option<String>,
+}
+
+/// Preserves accepted results and raw replies if a later batch fails.
+/// Progress reports one-based batch, total batch count, and attempt (1 through 3).
+pub fn analyze_report_with_progress(
+    records: &[&Record],
+    config: &AiConfig,
+    include_payload: bool,
+    mut progress: impl FnMut(usize, usize, usize),
+) -> Result<AiAnalysis> {
     config.validate()?;
     if records.is_empty() {
         bail!("no evidence selected for AI analysis");
@@ -343,11 +366,21 @@ pub fn analyze_with_progress(
         .build()?;
     let batches = batches(records, include_payload, config.batch_bytes)?;
     let count = batches.len();
+    let mut run = AiRun {
+        model: config.model.clone(),
+        endpoint: config.endpoint()?.to_string(),
+        batches: count,
+        analyzed_records: 0,
+        include_payload,
+        completed_batches: Some(0),
+        selected_records: Some(records.len()),
+        batch_results: vec![],
+    };
     let system = system_prompt(records, include_payload);
     let mut findings = vec![];
     let mut seen = HashSet::new();
+    let mut failure = None;
     for (i, batch) in batches.into_iter().enumerate() {
-        progress(i + 1, count);
         let allowed: HashSet<String> = batch.iter().map(|record| record.id.clone()).collect();
         let mut user = format!(
             "当前批次 batch: {}\n总批次 total_batches: {}\n当前批次记录数: {}\n包含网络原始包及载荷: {}\n\n",
@@ -360,10 +393,69 @@ pub fn analyze_with_progress(
             user.push_str(&record.text);
             user.push('\n');
         }
-        let content = request(&client, config, key.as_deref(), &system, &user)
-            .with_context(|| format!("AI batch {}/{} failed", i + 1, count))?;
-        let parsed = validate(&content, &allowed)
-            .with_context(|| format!("AI batch {}/{} invalid", i + 1, count))?;
+        let mut batch_result = AiBatch {
+            index: i + 1,
+            evidence_ids: batch.iter().map(|record| record.id.clone()).collect(),
+            attempts: vec![],
+            error: None,
+        };
+        let mut accepted = None;
+        for attempt in 1..=3 {
+            progress(i + 1, count, attempt);
+            let retry_user = if attempt == 1 {
+                user.clone()
+            } else {
+                format!(
+                    "{user}\n上次回复未通过 JSON 或证据校验，这是第 {attempt} 次请求。请重新分析同一批证据，只返回完整、合法的 JSON；保持描述简洁，正确转义引号和换行，只引用本批证据编号，不要添加注释或省略号。"
+                )
+            };
+            let content = match request(&client, config, key.as_deref(), &system, &retry_user) {
+                Ok(content) => content,
+                Err(error) => {
+                    let message = format!("{error:#}");
+                    batch_result.attempts.push(AiAttempt {
+                        response: None,
+                        error: Some(message.clone()),
+                    });
+                    batch_result.error = Some(message);
+                    break;
+                }
+            };
+            match validate(&content, &allowed) {
+                Ok(parsed) => {
+                    batch_result.attempts.push(AiAttempt {
+                        response: Some(content),
+                        error: None,
+                    });
+                    batch_result.error = None;
+                    accepted = Some(parsed);
+                    break;
+                }
+                Err(error) => {
+                    let message = format!("{error:#}");
+                    batch_result.attempts.push(AiAttempt {
+                        response: Some(content),
+                        error: Some(message.clone()),
+                    });
+                    batch_result.error = Some(message);
+                }
+            }
+        }
+        if let Some(error) = &batch_result.error {
+            failure = Some(format!(
+                "AI 第 {}/{} 批失败（请求 {} 次，已完成 {}/{} 批）：{}；后续批次未执行，已完成结果和原始回复保存在报告中。",
+                i + 1,
+                count,
+                batch_result.attempts.len(),
+                run.completed(),
+                count,
+                error
+            ));
+        }
+        run.batch_results.push(batch_result);
+        let Some(parsed) = accepted else { break };
+        run.completed_batches = Some(run.completed() + 1);
+        run.analyzed_records += batch.len();
         for f in parsed {
             let signature = serde_json::to_string(&(&f.title, &f.severity, &f.evidence_ids))?;
             if seen.insert(signature) {
@@ -380,16 +472,11 @@ pub fn analyze_with_progress(
             }
         }
     }
-    Ok((
+    Ok(AiAnalysis {
         findings,
-        AiRun {
-            model: config.model.clone(),
-            endpoint: config.endpoint()?.to_string(),
-            batches: count,
-            analyzed_records: records.len(),
-            include_payload,
-        },
-    ))
+        run,
+        error: failure,
+    })
 }
 pub fn check(config: &AiConfig) -> Result<()> {
     config.validate()?;

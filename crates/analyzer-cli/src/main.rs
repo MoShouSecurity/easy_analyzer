@@ -299,15 +299,28 @@ fn run(cli: Cli) -> Result<bool> {
             .collect();
         let progress = progress::AiProgress::start();
         let ai_result = ai::AiConfig::load(&config_path).and_then(|config| {
-            ai::analyze_with_progress(&selected, &config, args.include_payload, |index, total| {
-                progress.batch(index, total);
-            })
+            ai::analyze_report_with_progress(
+                &selected,
+                &config,
+                args.include_payload,
+                |index, total, attempt| {
+                    progress.batch(index, total, attempt);
+                },
+            )
         });
-        progress.finish(ai_result.is_ok());
+        progress.finish(
+            ai_result
+                .as_ref()
+                .is_ok_and(|result| result.error.is_none()),
+        );
         match ai_result {
-            Ok((findings, run)) => {
-                report.findings.extend(findings);
-                report.ai_runs.push(run);
+            Ok(result) => {
+                report.findings.extend(result.findings);
+                report.ai_runs.push(result.run);
+                if let Some(error) = result.error {
+                    success = false;
+                    report.error("AI", None, error);
+                }
             }
             Err(e) => {
                 success = false;

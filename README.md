@@ -86,6 +86,8 @@ cat cases/auth.log | ./easy-analyzer logs - -f text
 
 AI 输入是本地解析后带证据编号的文本，通过 Chat Completions 接口发送。system 提示词根据 Windows 事件、Linux 登录/SSH、Web、进程、网络及混合场景自动组合；结果会校验证据编号和 JSON 结构。
 
+AI 回复未通过 JSON 或证据校验时，当前批次最多重试两次；仍失败则停止后续分析并保留已完成结果。HTML 报告单列 AI 发现、完成范围及各批原始回复，JSON 报告在 `findings` 和 `ai_runs` 中保存这些内容；未通过校验的回复不作为结论。重试会再次调用 API。
+
 仅指定 `-a` 时发送证据，所选数据不会自动脱敏；PCAP 默认发送解析摘要，添加 `-P` 才发送原始包和载荷。
 
 ## 使用说明

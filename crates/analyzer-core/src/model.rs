@@ -174,6 +174,40 @@ pub struct AiRun {
     pub batches: usize,
     pub analyzed_records: usize,
     pub include_payload: bool,
+    /// None in older reports, which contained only fully completed AI runs.
+    #[serde(default)]
+    pub completed_batches: Option<usize>,
+    #[serde(default)]
+    pub selected_records: Option<usize>,
+    #[serde(default)]
+    pub batch_results: Vec<AiBatch>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiBatch {
+    pub index: usize,
+    pub evidence_ids: Vec<String>,
+    pub attempts: Vec<AiAttempt>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiAttempt {
+    /// Unvalidated replies are evidence of the API response, not accepted findings.
+    pub response: Option<String>,
+    pub error: Option<String>,
+}
+
+impl AiRun {
+    pub fn completed(&self) -> usize {
+        self.completed_batches.unwrap_or(self.batches)
+    }
+    pub fn selected(&self) -> usize {
+        self.selected_records.unwrap_or(self.analyzed_records)
+    }
+    pub fn is_complete(&self) -> bool {
+        self.completed() == self.batches
+    }
 }
 
 impl Default for AnalysisReport {

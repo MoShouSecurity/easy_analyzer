@@ -6,7 +6,7 @@ use std::{
 };
 
 enum Update {
-    Batch(usize, usize),
+    Batch(usize, usize, usize),
     Stop,
 }
 
@@ -61,8 +61,11 @@ impl AiProgress {
                     width = next_width;
                     frame += 1;
                     match receiver.recv_timeout(Duration::from_millis(120)) {
-                        Ok(Update::Batch(index, total)) => {
+                        Ok(Update::Batch(index, total, attempt)) => {
                             stage = format!("批次 {index}/{total}");
+                            if attempt > 1 {
+                                stage.push_str(&format!(" | 重试 {}/2", attempt - 1));
+                            }
                         }
                         Err(RecvTimeoutError::Timeout) => {}
                         Ok(Update::Stop) | Err(RecvTimeoutError::Disconnected) => {
@@ -80,9 +83,9 @@ impl AiProgress {
         progress
     }
 
-    pub fn batch(&self, index: usize, total: usize) {
+    pub fn batch(&self, index: usize, total: usize, attempt: usize) {
         if let Some((sender, _)) = &self.worker {
-            let _ = sender.send(Update::Batch(index, total));
+            let _ = sender.send(Update::Batch(index, total, attempt));
         }
     }
 
