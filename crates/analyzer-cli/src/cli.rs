@@ -173,7 +173,7 @@ pub struct CommonArgs {
     #[arg(
         long,
         help_heading = "查询与筛选",
-        help = "筛选本地规则引用的证据；与 --query 同用取交集"
+        help = "一键查询默认规则命中的高危、中危及低危证据；与 --query 同用取交集"
     )]
     suspicious: bool,
     #[arg(
@@ -228,7 +228,7 @@ pub struct CommonArgs {
         default_value_t = 50,
         value_name = "N",
         help_heading = "报告输出",
-        help = "终端记录/诊断显示上限；0 显示全部，不裁剪 JSON/HTML"
+        help = "终端记录、诊断及每项证据引用显示上限；0 显示全部，不裁剪 JSON/HTML"
     )]
     limit: usize,
     #[arg(

@@ -41,6 +41,7 @@ jobs:
         run: |
           mkdir -p dist
           cp target/release/easy-analyzer README.md LICENSE dist/
+          cp -R docs dist/docs
           cp -R tests/fixtures dist/samples
       - name: Package Windows
         if: runner.os == 'Windows'
@@ -48,6 +49,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target/release/easy-analyzer.exe,README.md,LICENSE dist/
+          Copy-Item docs dist/docs -Recurse
           Copy-Item tests/fixtures dist/samples -Recurse
       - name: Package macOS
         if: runner.os == 'macOS'
@@ -55,8 +57,8 @@ jobs:
           test "$(uname -m)" = arm64
           mkdir -p dist/docs
           cp target/release/easy-analyzer README.md LICENSE dist/
-          cp docs/MACOS.md docs/VALIDATION.md dist/docs/
-          cp docs/MACOS.md dist/开始使用.md
+          cp docs/MACOS.md docs/VALIDATION.md docs/DEFAULT_RULES.md dist/docs/
+          sed 's|](DEFAULT_RULES.md)|](docs/DEFAULT_RULES.md)|g' docs/MACOS.md > dist/开始使用.md
           cp tools/macos-demo.command dist/演示.command
           chmod 755 dist/演示.command
           cp -R tests/fixtures dist/samples

@@ -1,6 +1,36 @@
 use crate::{collect::process_tree, model::*};
 use std::fmt::Write;
 
+fn ordered_findings(report: &AnalysisReport, apply_query: bool) -> Vec<&Finding> {
+    let matches = report.query_matches.as_ref().map(|ids| {
+        ids.iter()
+            .map(String::as_str)
+            .collect::<std::collections::HashSet<_>>()
+    });
+    let mut findings: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|f| {
+            !apply_query
+                || matches
+                    .as_ref()
+                    .is_none_or(|ids| f.evidence_ids.iter().any(|id| ids.contains(id.as_str())))
+        })
+        .collect();
+    findings.sort_by_key(|f| std::cmp::Reverse(f.severity.rank()));
+    findings
+}
+fn risk_summary(findings: &[&Finding]) -> String {
+    let mut counts = [0; 5];
+    for f in findings {
+        counts[f.severity.rank() as usize] += 1;
+    }
+    format!(
+        "严重 {} | 高危 {} | 中危 {} | 低危 {} | 信息 {}",
+        counts[4], counts[3], counts[2], counts[1], counts[0]
+    )
+}
+
 pub fn terminal(report: &AnalysisReport, limit: usize, tree: bool) -> String {
     let mut out = format!(
         "Easy Analyzer · {}\nSources: {} | Records: {} | Findings: {} | Flows: {} | Diagnostics: {}\n",
@@ -18,30 +48,62 @@ pub fn terminal(report: &AnalysisReport, limit: usize, tree: bool) -> String {
             s.format, s.path, s.bytes, s.sha256
         );
     }
+    let matches = report.query_matches.as_ref().map(|ids| {
+        ids.iter()
+            .map(String::as_str)
+            .collect::<std::collections::HashSet<_>>()
+    });
+    let findings = ordered_findings(report, true);
     out.push_str("\nFindings / 分析发现\n");
-    for f in &report.findings {
+    let _ = writeln!(out, "  {}（分析发现项数）", risk_summary(&findings));
+    if findings.is_empty() {
+        out.push_str("  当前范围未命中规则。\n");
+    }
+    let mut record_findings: std::collections::HashMap<&str, Vec<&Finding>> =
+        std::collections::HashMap::new();
+    for f in &findings {
+        for id in &f.evidence_ids {
+            record_findings.entry(id).or_default().push(f);
+        }
+        let ids: Vec<_> = f
+            .evidence_ids
+            .iter()
+            .filter(|id| matches.as_ref().is_none_or(|m| m.contains(id.as_str())))
+            .collect();
+        let shown = if limit == 0 {
+            ids.len()
+        } else {
+            limit.min(ids.len())
+        };
         let _ = writeln!(
             out,
-            "  [{:?}] {} ({}, confidence {:.2})\n    {}\n    Evidence: {}",
-            f.severity,
+            "  [{}] {} ({}, 置信度 {:.2})\n    {}\n    证据（当前范围 {} 条）：{}",
+            f.severity.label(),
             f.title,
             f.origin,
             f.confidence,
             f.description,
-            f.evidence_ids.join(", ")
+            ids.len(),
+            ids.iter()
+                .take(shown)
+                .map(|id| id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         );
+        if shown < ids.len() {
+            let _ = writeln!(
+                out,
+                "    其余 {} 条证据引用见 JSON/HTML；-n 0 显示全部。",
+                ids.len() - shown
+            );
+        }
     }
     if tree {
         out.push_str("\nProcess tree / 进程树\n");
         out.push_str(&process_tree(&report.records));
     }
     out.push_str("\nRecords / 记录\n");
-    let matches = report.query_matches.as_ref().map(|ids| {
-        ids.iter()
-            .map(String::as_str)
-            .collect::<std::collections::HashSet<_>>()
-    });
-    let selected: Vec<_> = report
+    let mut selected: Vec<_> = report
         .records
         .iter()
         .filter(|r| {
@@ -50,12 +112,33 @@ pub fn terminal(report: &AnalysisReport, limit: usize, tree: bool) -> String {
                 .is_none_or(|ids| ids.contains(r.id.as_str()))
         })
         .collect();
+    if matches.is_some() {
+        selected.sort_by_key(|r| {
+            std::cmp::Reverse(
+                record_findings
+                    .get(r.id.as_str())
+                    .map_or(0, |f| f[0].severity.rank()),
+            )
+        });
+    }
     let n = if limit == 0 {
         selected.len()
     } else {
         limit.min(selected.len())
     };
     for r in selected.iter().take(n) {
+        if let Some(found) = record_findings.get(r.id.as_str()) {
+            let _ = writeln!(
+                out,
+                "  风险：{} · 规则：{}",
+                found[0].severity.label(),
+                found
+                    .iter()
+                    .map(|f| f.origin.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
         let _ = writeln!(
             out,
             "  {} [{:?}] {}\n    {}",
@@ -171,10 +254,16 @@ body{font:15px/1.65 system-ui,sans-serif;color:#203046;background:#edf2f6;margin
     }
     out.push_str("</table></section>");
     out.push_str("<h2>分析发现</h2>");
+    let findings = ordered_findings(report, false);
+    let _ = write!(
+        out,
+        "<section>{}（分析发现项数）</section>",
+        risk_summary(&findings)
+    );
     if report.findings.is_empty() {
         out.push_str("<section>未产生分析发现。未发现规则匹配不能证明主机安全。</section>");
     }
-    for f in &report.findings {
+    for f in findings {
         let sev = serde_json::to_value(&f.severity)
             .unwrap()
             .as_str()
@@ -184,7 +273,7 @@ body{font:15px/1.65 system-ui,sans-serif;color:#203046;background:#edf2f6;margin
             out,
             "<article class=\"{}\"><h3>[{}] {}</h3><small>{} · 置信度 {:.2}</small><p>{}</p><p>证据：",
             sev,
-            sev,
+            f.severity.label(),
             escape(&f.title),
             escape(&f.origin),
             f.confidence,

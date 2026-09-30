@@ -178,7 +178,20 @@ easy-analyzer pcap cases/capture.pcap --ai --include-payload
 
 ## 规则、证据和已知边界
 
-内置规则覆盖重复失败登录（5 分钟内至少 5 次；无完整时间时至少 10 次）、失败后成功登录、远程 root 登录、Windows 清除日志事件、常见 Web 利用/探测特征、临时目录进程、编码/下载执行命令及 Office 启动脚本解释器。规则输出的是待核查线索，不判断利用已成功。
+日志分析默认启用 53 项分级规则（16 项高危、26 项中危、11 项低危），覆盖 Windows 登录/账号/权限/审计/服务/计划任务、Linux 登录与敏感操作、Web 攻击特征与常见异常响应。完整列表、条件及边界见 [默认日志规则](docs/DEFAULT_RULES.md)。进程临时目录、编码/下载执行及 Office 启动脚本解释器规则继续可用。
+
+```sh
+# 一键查询全部高危、中危、低危命中；不需要自己写关键词
+easy-analyzer logs cases/Security.evtx cases/auth.log cases/access.log -s
+# 在默认规则命中范围内进一步查询关键词
+easy-analyzer logs cases/access.log -s -q '.env'
+# 保存完整分级发现与原始证据
+easy-analyzer logs cases/access.log -s -j reports/logs.json -H reports/logs.html
+```
+
+终端和 HTML 按严重度从高到低展示风险计数、规则名称和证据引用；终端查询范围内的记录标注最高风险级别及全部命中规则。同一规则在同一来源的命中汇总为一项发现，因此风险计数表示发现项数，不能直接视为攻击次数。`-n` 同时限制终端每项发现展示的证据引用数量，`-n 0` 显示全部。关键词查询与 `-s` 取交集；JSON/HTML 保留完整数据及全部发现，查询结果仍位于 `query_matches`。
+
+这些规则覆盖常见应急核查场景，无法穷尽所有攻击；命中结果表示待核查线索，不判断利用已成功。
 
 证据 ID 由来源路径/内容哈希和原始位置构成；记录包含源 ID、行号/字节偏移/事件 ID、时间、原始内容和解析状态。EVTX 的 `raw` 是解析后的事件 JSON，二进制登录日志和网络包的 `raw` 是十六进制。完整原始文件由来源路径和 SHA256 引用。JSON 报告 schema_version 为 1。
 

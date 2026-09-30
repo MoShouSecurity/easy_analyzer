@@ -102,6 +102,27 @@ pub enum Severity {
     Critical,
 }
 
+impl Severity {
+    pub fn rank(&self) -> u8 {
+        match self {
+            Self::Info => 0,
+            Self::Low => 1,
+            Self::Medium => 2,
+            Self::High => 3,
+            Self::Critical => 4,
+        }
+    }
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Info => "信息",
+            Self::Low => "低危",
+            Self::Medium => "中危",
+            Self::High => "高危",
+            Self::Critical => "严重",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Finding {

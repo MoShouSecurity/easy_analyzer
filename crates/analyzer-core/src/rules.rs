@@ -4,6 +4,9 @@ use chrono::DateTime;
 use regex::{Regex, RegexBuilder};
 use std::collections::BTreeMap;
 
+mod default_logs;
+type LoginKey = (String, String, String, String);
+
 pub fn query(records: &[Record], expression: &str, regex: bool) -> Result<Vec<String>> {
     let pattern = if regex {
         expression.to_owned()
@@ -64,6 +67,7 @@ fn decoded(s: &str) -> String {
 }
 pub fn analyze(report: &mut AnalysisReport) {
     report.findings.retain(|f| !f.origin.starts_with("local:"));
+    default_logs::analyze(report);
     let web=Regex::new(r"(?i)(?:\.\./|/etc/passwd|/proc/self|union\s+(?:all\s+)?select|<script|\$\{|;\s*(?:curl|wget|bash)|/\.env(?:\?|$)|/\.git/)").unwrap();
     let command=Regex::new(r"(?i)(?:-(?:enc|encodedcommand)\b|frombase64string|(?:curl|wget)\b.*\|\s*(?:sh|bash)|/dev/tcp/)").unwrap();
     let processes: BTreeMap<_, _> = report
@@ -77,67 +81,31 @@ pub fn analyze(report: &mut AnalysisReport) {
             }
         })
         .collect();
-    let mut failures: BTreeMap<(String, String, String), Vec<&Record>> = BTreeMap::new();
-    let mut successes: BTreeMap<(String, String, String), Vec<&Record>> = BTreeMap::new();
+    let mut failures: BTreeMap<LoginKey, Vec<&Record>> = BTreeMap::new();
+    let mut successes: BTreeMap<LoginKey, Vec<&Record>> = BTreeMap::new();
     for r in &report.records {
         if r.status != ParseStatus::Parsed {
             continue;
         }
         match &r.data {
             RecordData::Log(l) => {
-                let event = l.fields.get("event_id").map(String::as_str);
                 let action = l.fields.get("action").map(String::as_str);
                 let user = l.fields.get("user").cloned().unwrap_or_default();
                 let ip = l.fields.get("client_ip").cloned().unwrap_or_default();
-                if action == Some("login_failure") || event == Some("4625") {
+                let host = l.fields.get("host").cloned().unwrap_or_default();
+                if action == Some("login_failure") || default_logs::authentication_event(l, "4625")
+                {
                     failures
-                        .entry((r.source_id.clone(), ip.clone(), user.clone()))
+                        .entry((r.source_id.clone(), host.clone(), ip.clone(), user.clone()))
                         .or_default()
                         .push(r);
                 }
-                if action == Some("login_success") || event == Some("4624") {
+                if action == Some("login_success") || default_logs::authentication_event(l, "4624")
+                {
                     successes
-                        .entry((r.source_id.clone(), ip.clone(), user.clone()))
+                        .entry((r.source_id.clone(), host, ip.clone(), user.clone()))
                         .or_default()
                         .push(r);
-                }
-                if action == Some("login_success") && user == "root" && !ip.is_empty() {
-                    report.findings.push(finding(
-                        "root-login",
-                        Severity::Medium,
-                        "远程 root 登录",
-                        format!("记录显示 root 从 {ip} 登录；需核对授权操作。"),
-                        vec![r.id.clone()],
-                        0.7,
-                    ));
-                }
-                if event == Some("1102")
-                    || (event == Some("104")
-                        && l.fields.iter().any(|(key, value)| {
-                            key.ends_with("Provider.#attributes.Name")
-                                && value.eq_ignore_ascii_case("Microsoft-Windows-Eventlog")
-                        }))
-                {
-                    report.findings.push(finding(
-                        "event-log-clear",
-                        Severity::High,
-                        "事件日志清除",
-                        format!("发现 Windows 事件 {event:?}，需检查清除原因及关联账号。"),
-                        vec![r.id.clone()],
-                        0.9,
-                    ));
-                }
-                if let Some(uri) = l.fields.get("uri")
-                    && web.is_match(&decoded(uri))
-                {
-                    report.findings.push(finding(
-                        "web-probe",
-                        Severity::Medium,
-                        "可疑 Web 请求",
-                        format!("请求含常见探测或利用特征：{uri}；匹配本身不证明利用成功。"),
-                        vec![r.id.clone()],
-                        0.7,
-                    ));
                 }
             }
             RecordData::Process(p) => {
@@ -216,8 +184,8 @@ pub fn analyze(report: &mut AnalysisReport) {
             }
         }
     }
-    for ((source, ip, user), mut records) in failures {
-        if ip.is_empty() {
+    for ((source, host, ip, user), mut records) in failures {
+        if ip.is_empty() || ip == "-" {
             continue;
         }
         records.sort_by_key(|r| {
@@ -273,7 +241,7 @@ pub fn analyze(report: &mut AnalysisReport) {
             ));
         }
         for success in successes
-            .get(&(source, ip.clone(), user.clone()))
+            .get(&(source, host, ip.clone(), user.clone()))
             .into_iter()
             .flatten()
         {
@@ -306,6 +274,9 @@ pub fn analyze(report: &mut AnalysisReport) {
         }
     }
     report.flows = crate::network::flows(&report.records);
+    report
+        .findings
+        .sort_by_key(|f| std::cmp::Reverse(f.severity.rank()));
 }
 #[cfg(test)]
 mod tests {

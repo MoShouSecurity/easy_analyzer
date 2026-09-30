@@ -293,6 +293,9 @@ fn run(cli: Cli) -> Result<bool> {
             }
         }
     }
+    report
+        .findings
+        .sort_by_key(|f| std::cmp::Reverse(f.severity.rank()));
     let json = serde_json::to_string_pretty(&report)?;
     if let Some(path) = &args.json_out {
         write_output(Some(path), &json)?;
