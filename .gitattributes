@@ -1,0 +1,6 @@
+# Keep frontend sources identical on Windows and Unix for Prettier and Vite.
+*.ts text eol=lf
+*.tsx text eol=lf
+*.css text eol=lf
+*.json text eol=lf
+*.html text eol=lf
