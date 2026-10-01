@@ -1174,7 +1174,7 @@ export function App() {
                 </button>
               </Tooltip>
               <div className="sidebar-version">
-                Easy Analyzer <span>1.1.0</span>
+                Easy Analyzer <span>1.1.1</span>
               </div>
             </div>
           </aside>

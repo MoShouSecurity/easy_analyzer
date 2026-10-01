@@ -120,12 +120,20 @@ open "dist/Easy Analyzer.app"
 
 GUI 使用后台任务进行导入、筛选、关系构建、AI、配置和导出。AI 默认建议本地可疑项，只有主动点击才发送；当前筛选覆盖完整集合，原始包/载荷每次主动勾选。报告保留完整证据，不受界面分页限制。
 
-详见[GUI 使用与构建说明](docs/GUI.md)、[720p 布局](docs/GUI_DESIGN.md)和[GUI 验证记录](docs/GUI_VALIDATION.md)。八页双主题的 16 张真实 1280×720 截图入口为 `dist/gui-linear-720p/index.html`，另附 960×600 双主题检查截图（仍需人工复核的交互见验证记录）；图片和程序不纳入源码。现有标签发布流程仍只构建 CLI。
+详见[GUI 使用与构建说明](docs/GUI.md)、[720p 布局](docs/GUI_DESIGN.md)和[GUI 验证记录](docs/GUI_VALIDATION.md)。八页双主题的 16 张真实 1280×720 截图入口为 `dist/gui-linear-720p/index.html`，另附 960×600 双主题检查截图（仍需人工复核的交互见验证记录）；图片和程序不纳入源码。标签发布流程同时构建 CLI 和 GUI；从 v1.1.1 标签起采用新版流程，v1.1.0 附件保持原样。
 
 ## 构建
 
 安装 Rust 1.95+、C/C++ 构建工具和 CMake 后，运行 `cargo build --release --locked`，程序生成在 `target/release/`。workspace 默认成员仍为 core/app/CLI；GUI 需显式选择 `-p analyzer-gui`。
 
-日常提交和分支推送不触发 GitHub Actions。只有明确要求“打包成 tag”时，才创建并推送 `vX.Y.Z` 发布标签；Actions 自动构建三平台程序、生成并校验 SHA-256，然后发布到 Releases。标签版本必须与源码版本一致。
+日常提交和分支推送不触发 GitHub Actions。只有明确要求“打包成 tag”时，才创建并推送 `vX.Y.Z` 发布标签；Actions 自动构建三平台的 CLI 和 GUI、生成并校验 SHA-256，然后发布到 Releases。标签版本必须与 Rust workspace、Cargo.lock、Tauri 配置和 npm 版本一致。
 
-[Releases](https://github.com/MoShouSecurity/easy_analyzer/releases) 附件仅包含 Windows x64、Linux x64、macOS ARM64 三个独立程序及 `SHA256SUMS`，不附文档、样本或压缩包。
+[Releases](https://github.com/MoShouSecurity/easy_analyzer/releases) 的后续新版本附件包含以下六个独立程序及 `SHA256SUMS`，不附文档、样本、配置或压缩包：
+
+| 平台 | CLI（命令行） | GUI（图形界面） |
+| --- | --- | --- |
+| Windows x64 | `easy-analyzer-cli-windows-x64.exe` | `easy-analyzer-gui-windows-x64.exe` |
+| Linux x64 | `easy-analyzer-cli-linux-x64` | `easy-analyzer-gui-linux-x64` |
+| macOS ARM64 | `easy-analyzer-cli-macos-arm64` | `easy-analyzer-gui-macos-arm64` |
+
+Linux/macOS 下载后需 `chmod +x`。macOS CLI 支持 11.0+、GUI 支持 13.0+，使用 ad-hoc 签名，未公证；GUI `.app` 仍可本地打包。Windows GUI 需要 WebView2 Runtime；Linux GUI 需要桌面环境与 GTK 3/WebKitGTK 4.1 运行库，Ubuntu 22.04 可安装 `libwebkit2gtk-4.1-0`。Windows/Linux GUI 的实际运行验证状态见[验证记录](docs/GUI_VALIDATION.md)。

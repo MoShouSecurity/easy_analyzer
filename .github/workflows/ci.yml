@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   build:
-    name: Build ${{ matrix.platform }}
+    name: Build CLI and GUI (${{ matrix.platform }})
     strategy:
       fail-fast: false
       matrix:
@@ -35,42 +35,71 @@ jobs:
     env:
       RELEASE_TAG: ${{ github.ref_name }}
       BUILD_TARGET: ${{ matrix.target }}
-      RELEASE_FILE: easy-analyzer-${{ matrix.platform }}${{ matrix.suffix }}
+      RELEASE_PLATFORM: ${{ matrix.platform }}
       BINARY_SUFFIX: ${{ matrix.suffix }}
       MACOSX_DEPLOYMENT_TARGET: '11.0'
+      CARGO_BUILD_JOBS: '2'
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
       - name: Validate release source
         run: |
-          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"
-          RELEASE_VERSION="${RELEASE_TAG#v}"
-          SOURCE_VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
-          test "$SOURCE_VERSION" = "$RELEASE_VERSION"
+          python scripts/release_assets.py validate-source "$RELEASE_TAG"
+          python -m unittest discover -s scripts -p 'test_release_assets.py'
+      - name: Install Linux GUI dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev build-essential cmake curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: crates/analyzer-gui/frontend/package-lock.json
+      - name: Build and test GUI frontend
+        run: |
+          npm --prefix crates/analyzer-gui/frontend ci --ignore-scripts
+          npm --prefix crates/analyzer-gui/frontend run format:check
+          npm --prefix crates/analyzer-gui/frontend test
+          npm --prefix crates/analyzer-gui/frontend run build
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release --locked --target "$BUILD_TARGET"
-      - name: Stage program only
+        with:
+          key: cli-gui-${{ matrix.target }}
+      - name: Build CLI
+        run: cargo build -p easy-analyzer --release --locked --target "$BUILD_TARGET"
+      - name: Build GUI with embedded frontend
+        env:
+          MACOSX_DEPLOYMENT_TARGET: '13.0'
+        run: cargo build -p analyzer-gui --release --locked --target "$BUILD_TARGET"
+      - name: Stage CLI and GUI programs
         run: |
           mkdir -p release
-          cp "target/$BUILD_TARGET/release/easy-analyzer$BINARY_SUFFIX" "release/$RELEASE_FILE"
+          cp "target/$BUILD_TARGET/release/easy-analyzer$BINARY_SUFFIX" "release/easy-analyzer-cli-$RELEASE_PLATFORM$BINARY_SUFFIX"
+          cp "target/$BUILD_TARGET/release/easy-analyzer-gui$BINARY_SUFFIX" "release/easy-analyzer-gui-$RELEASE_PLATFORM$BINARY_SUFFIX"
           if [[ "$RUNNER_OS" == macOS ]]; then
-            codesign --force --sign - "release/$RELEASE_FILE"
-            codesign --verify --strict "release/$RELEASE_FILE"
-            lipo "release/$RELEASE_FILE" -verify_arch arm64
+            for program in release/*; do
+              codesign --force --sign - --timestamp=none "$program"
+              codesign --verify --strict "$program"
+              lipo "$program" -verify_arch arm64
+            done
           fi
-          BINARY_VERSION="$("release/$RELEASE_FILE" --version)"
-          test "${BINARY_VERSION##* }" = "${RELEASE_TAG#v}"
+          python scripts/release_assets.py verify-programs release "$RELEASE_PLATFORM" "${RELEASE_TAG#v}"
       - uses: actions/upload-artifact@v4
         with:
-          name: program-${{ matrix.platform }}
-          path: release/${{ env.RELEASE_FILE }}
+          name: programs-${{ matrix.platform }}
+          path: release/*
           if-no-files-found: error
           retention-days: 7
   publish:
-    name: Publish programs and SHA256
+    name: Publish CLI, GUI and SHA256
     needs: build
     runs-on: ubuntu-22.04
     permissions:
@@ -80,43 +109,56 @@ jobs:
       GH_REPO: ${{ github.repository }}
       RELEASE_TAG: ${{ github.ref_name }}
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
       - uses: actions/download-artifact@v4
         with:
-          pattern: program-*
+          pattern: programs-*
           path: release
           merge-multiple: true
       - name: Generate and verify SHA256
         shell: bash
         run: |
-          cd release
-          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 3
-          sha256sum easy-analyzer-linux-x64 easy-analyzer-windows-x64.exe easy-analyzer-macos-arm64 > SHA256SUMS
-          sha256sum --check SHA256SUMS
+          python scripts/release_assets.py checksums release
+          (cd release && sha256sum --check SHA256SUMS)
+          python scripts/release_assets.py names > "$RUNNER_TEMP/expected-assets.txt"
+          jq -Rsc 'split("\n") | map(select(length > 0)) | sort' "$RUNNER_TEMP/expected-assets.txt" > "$RUNNER_TEMP/expected-assets.json"
           cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
-          应急响应分析 CLI：日志、进程、离线网络分析及 AI 辅助分析，支持终端、JSON、HTML 报告。
+          应急响应证据分析工具，同时提供命令行 CLI 和桌面 GUI。
 
-          下载对应平台的独立程序；SHA256SUMS 包含三个程序的 SHA-256 校验值。
-          macOS 为 Apple Silicon ARM64 版本，使用 ad-hoc 签名，未进行 Apple 公证。
+          | 平台 | CLI（命令行） | GUI（图形界面） |
+          | --- | --- | --- |
+          | Windows x64 | easy-analyzer-cli-windows-x64.exe | easy-analyzer-gui-windows-x64.exe |
+          | Linux x64 | easy-analyzer-cli-linux-x64 | easy-analyzer-gui-linux-x64 |
+          | macOS ARM64 | easy-analyzer-cli-macos-arm64 | easy-analyzer-gui-macos-arm64 |
+
+          SHA256SUMS 包含以上六个独立程序的 SHA-256 校验值。源码、配置、样本与截图不作为附件发布。
+          Windows GUI 需要 Microsoft Edge WebView2 Runtime。
+          Linux GUI 需要桌面环境、GTK 3 与 WebKitGTK 4.1 运行库（Ubuntu 22.04 可安装 libwebkit2gtk-4.1-0）。
+          Linux/macOS 下载后先 chmod +x，再直接运行对应程序。
+          macOS CLI 要求 11.0+，GUI 要求 13.0+；仅支持 Apple Silicon ARM64，采用 ad-hoc 签名，未进行 Apple 公证。GUI .app 可按 docs/GUI.md 在本地打包。
           NOTES
       - name: Upload clean release draft
         shell: bash
         run: |
+          mapfile -t release_files < "$RUNNER_TEMP/expected-assets.txt"
           cd release
           if gh release view "$RELEASE_TAG" --json isDraft,assets > "$RUNNER_TEMP/existing-release.json"; then
             # 失败后重跑可补全草稿，但不覆盖已经发布的版本。
             test "$(jq -r '.isDraft' "$RUNNER_TEMP/existing-release.json")" = true
-            jq -e '[.assets[].name] - ["easy-analyzer-linux-x64", "easy-analyzer-windows-x64.exe", "easy-analyzer-macos-arm64", "SHA256SUMS"] | length == 0' "$RUNNER_TEMP/existing-release.json"
-            gh release upload "$RELEASE_TAG" \
-              easy-analyzer-linux-x64 easy-analyzer-windows-x64.exe easy-analyzer-macos-arm64 SHA256SUMS \
-              --clobber
+            jq -e --slurpfile expected "$RUNNER_TEMP/expected-assets.json" \
+              '([.assets[].name] - $expected[0]) | length == 0' "$RUNNER_TEMP/existing-release.json"
+            gh release upload "$RELEASE_TAG" "${release_files[@]}" --clobber
           else
-            gh release create "$RELEASE_TAG" \
-              easy-analyzer-linux-x64 easy-analyzer-windows-x64.exe easy-analyzer-macos-arm64 SHA256SUMS \
+            gh release create "$RELEASE_TAG" "${release_files[@]}" \
               --verify-tag --draft --title "Easy Analyzer $RELEASE_TAG" \
               --notes-file "$RUNNER_TEMP/release-notes.md"
           fi
           gh release view "$RELEASE_TAG" --json assets --jq '[.assets[].name] | sort' > "$RUNNER_TEMP/release-assets.json"
-          jq -e '. == (["easy-analyzer-linux-x64", "easy-analyzer-windows-x64.exe", "easy-analyzer-macos-arm64", "SHA256SUMS"] | sort)' "$RUNNER_TEMP/release-assets.json"
+          jq -e --slurpfile expected "$RUNNER_TEMP/expected-assets.json" \
+            '. == $expected[0]' "$RUNNER_TEMP/release-assets.json"
       - name: Publish release
         shell: bash
         run: gh release edit "$RELEASE_TAG" --draft=false --latest --notes-file "$RUNNER_TEMP/release-notes.md"

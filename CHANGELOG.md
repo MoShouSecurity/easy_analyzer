@@ -1,5 +1,11 @@
 # 更新记录
 
+## 1.1.1 — 2026-10-01
+
+- 标签 CI 同时构建 Windows x64、Linux x64、macOS ARM64 的 CLI 与 Tauri GUI，增加前端构建/测试和 Linux 图形库依赖；workspace 默认构建成员保持不变。
+- Releases 附件以 `easy-analyzer-cli-*` / `easy-analyzer-gui-*` 区分六个独立程序，统一生成 SHA256SUMS；校验 Rust/GUI/依赖锁版本，拒绝缺失程序和额外配置、报告等文件，不覆盖已发布版本。
+- 修正本机 AI 模拟服务接收连接后的阻塞模式，避免 macOS 测试偶发读取失败；不改变实际 AI 调用逻辑。
+
 ## 1.1.0 — 2026-10-01
 
 - 新增 Tauri 2 + React 原生 GUI，采用 1280×720 的八页工作台、浅深双主题、可调整详情与窄窗口抽屉；保留 CLI 与共享应用层架构。
