@@ -1,5 +1,9 @@
 # 更新记录
 
+## 未发布
+
+- GUI 日志详情汉化常见 Windows 事件字段名称，悬停可查看原始字段名；保留未知字段、原始值和报告 schema。
+
 ## 1.1.1 — 2026-10-01
 
 - 标签 CI 同时构建 Windows x64、Linux x64、macOS ARM64 的 CLI 与 Tauri GUI，增加前端构建/测试和 Linux 图形库依赖；workspace 默认构建成员保持不变。

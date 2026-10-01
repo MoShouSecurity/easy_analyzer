@@ -10,6 +10,7 @@ import { useState, useEffect } from "react";
 import { Button } from "./ui/button";
 import { Tabs } from "./ui/tabs";
 import { basename, bytes } from "../lib/utils";
+import { logFieldLabel } from "../lib/field-labels";
 import {
   severityLabel,
   statusLabel,
@@ -29,14 +30,16 @@ function Field({
   name,
   value,
   mono = false,
+  originalName,
 }: {
   name: string;
   value: string | null | undefined;
   mono?: boolean;
+  originalName?: string;
 }) {
   return (
     <div className="detail-field">
-      <span>{name}</span>
+      <span title={originalName}>{name}</span>
       <div className={mono ? "mono" : ""}>{value || "未知"}</div>
     </div>
   );
@@ -189,7 +192,13 @@ export function Inspector({
                   <>
                     <Field name="类别" value={fields.fields.category} />
                     {Object.entries(fields.fields.fields).map(([k, v]) => (
-                      <Field key={k} name={k} value={v} mono />
+                      <Field
+                        key={k}
+                        name={logFieldLabel(k)}
+                        originalName={k}
+                        value={v}
+                        mono
+                      />
                     ))}
                   </>
                 )}
