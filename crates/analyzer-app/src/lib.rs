@@ -25,6 +25,7 @@ mod service;
 mod session;
 pub mod task;
 mod types;
+mod view;
 
 pub use analyzer_core as core;
 pub use analyzer_core::{
@@ -37,3 +38,4 @@ pub use service::AnalysisService;
 pub use session::{AnalysisSession, Page, RecordSelection, RecordSummary};
 pub use task::{TaskEvent, TaskHandle, TaskId};
 pub use types::*;
+pub use view::*;

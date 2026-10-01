@@ -46,14 +46,14 @@ impl RecordSelection {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Page<T> {
     pub offset: usize,
     pub total: usize,
     pub items: Vec<T>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct RecordSummary {
     pub id: String,
     pub source_id: String,
@@ -173,6 +173,25 @@ impl AnalysisSession {
         offset: usize,
         limit: usize,
     ) -> Result<Page<RecordSummary>> {
+        self.page_impl(selection, offset, limit, true)
+    }
+    /// Lightweight table page: packet payload is fetched only through `record(id)`.
+    /// The existing `page` API retains its complete parsed-field behavior.
+    pub fn page_metadata(
+        &self,
+        selection: Option<&RecordSelection>,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Page<RecordSummary>> {
+        self.page_impl(selection, offset, limit, false)
+    }
+    fn page_impl(
+        &self,
+        selection: Option<&RecordSelection>,
+        offset: usize,
+        limit: usize,
+        include_payload: bool,
+    ) -> Result<Page<RecordSummary>> {
         check_page(limit)?;
         if let Some(selection) = selection {
             self.validate_selection(selection)?;
@@ -191,7 +210,24 @@ impl AnalysisSession {
                         position: record.position.clone(),
                         timestamp: record.timestamp.clone(),
                         status: record.status.clone(),
-                        data: record.data.clone(),
+                        data: match &record.data {
+                            RecordData::Packet(packet) if !include_payload => {
+                                RecordData::Packet(core::PacketData {
+                                    link_type: packet.link_type,
+                                    captured_bytes: packet.captured_bytes,
+                                    original_bytes: packet.original_bytes,
+                                    source: packet.source.clone(),
+                                    destination: packet.destination.clone(),
+                                    source_port: packet.source_port,
+                                    destination_port: packet.destination_port,
+                                    protocol: packet.protocol.clone(),
+                                    tcp_flags: packet.tcp_flags,
+                                    application: packet.application.clone(),
+                                    payload_hex: String::new(),
+                                })
+                            }
+                            data => data.clone(),
+                        },
                         summary: core::report::record_summary(record),
                     }
                 })

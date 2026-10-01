@@ -1,5 +1,6 @@
 //! Structured process relationships, namespaced by evidence source.
-use crate::{Record, RecordData};
+use crate::{ExecutionContext, Record, RecordData};
+use anyhow::Result;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 #[derive(Debug, Clone)]
@@ -26,8 +27,17 @@ pub struct ProcessForest {
 }
 
 pub fn process_forest(records: &[Record]) -> ProcessForest {
+    process_forest_with_context(records, &ExecutionContext::default())
+        .expect("uncancelled process forest")
+}
+
+pub fn process_forest_with_context(
+    records: &[Record],
+    ctx: &ExecutionContext,
+) -> Result<ProcessForest> {
     let mut groups: BTreeMap<&str, Vec<_>> = BTreeMap::new();
     for record in records {
+        ctx.check()?;
         if let RecordData::Process(process) = &record.data {
             groups
                 .entry(&record.source_id)
@@ -37,10 +47,12 @@ pub fn process_forest(records: &[Record]) -> ProcessForest {
     }
     let trees = groups
         .into_iter()
-        .map(|(source_id, mut records)| {
+        .map(|(source_id, mut records)| -> Result<ProcessTree> {
+            ctx.check()?;
             records.sort_by(|(a, pa), (b, pb)| (pa.pid, &a.id).cmp(&(pb.pid, &b.id)));
             let mut pids = HashMap::new();
             for (index, (_, process)) in records.iter().enumerate() {
+                ctx.check()?;
                 pids.entry(process.pid).or_insert(index);
             }
             let parents: Vec<_> = records
@@ -61,6 +73,7 @@ pub fn process_forest(records: &[Record]) -> ProcessForest {
                 .collect();
             let mut roots = vec![];
             for (i, parent) in parents.iter().enumerate() {
+                ctx.check()?;
                 if let Some(parent) = parent {
                     let id = nodes[i].record_id.clone();
                     nodes[*parent].children.push(id);
@@ -72,6 +85,7 @@ pub fn process_forest(records: &[Record]) -> ProcessForest {
             let mut finished = HashSet::new();
             let mut cycle_roots = vec![];
             for start in 0..nodes.len() {
+                ctx.check()?;
                 if finished.contains(&start) {
                     continue;
                 }
@@ -79,6 +93,7 @@ pub fn process_forest(records: &[Record]) -> ProcessForest {
                 let mut positions: HashMap<usize, usize> = HashMap::new();
                 let mut cursor = Some(start);
                 while let Some(i) = cursor {
+                    ctx.check()?;
                     if finished.contains(&i) {
                         break;
                     }
@@ -97,13 +112,13 @@ pub fn process_forest(records: &[Record]) -> ProcessForest {
                 }
                 finished.extend(path);
             }
-            ProcessTree {
+            Ok(ProcessTree {
                 source_id: source_id.into(),
                 roots,
                 cycle_roots,
                 nodes,
-            }
+            })
         })
-        .collect();
-    ProcessForest { trees }
+        .collect::<Result<Vec<_>>>()?;
+    Ok(ProcessForest { trees })
 }

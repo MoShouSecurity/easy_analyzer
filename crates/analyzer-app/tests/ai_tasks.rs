@@ -214,6 +214,29 @@ fn ai_scopes_reuse_evidence_and_keep_unique_findings() {
 }
 
 #[test]
+fn explicit_ai_settings_are_frozen_without_reloading_the_file() {
+    let server = Server::new(Duration::ZERO, false);
+    let dir = tempfile::tempdir().unwrap();
+    let session = session("auth.log");
+    let options = server.options(dir.path(), 98_304, AiScope::All, false);
+    let mut config = ConfigService::load(&options.config_path).unwrap();
+    config.model = "previewed-model".into();
+    std::fs::remove_file(&options.config_path).unwrap();
+    let outcome = AnalysisService::analyze_ai_with_config(
+        &session,
+        &options,
+        None,
+        &config,
+        &ExecutionContext::default(),
+    )
+    .unwrap();
+    assert_eq!(outcome.status, TaskStatus::Completed);
+    let requests = server.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0]["model"], "previewed-model");
+}
+
+#[test]
 fn pcap_ai_payload_policy_is_unchanged() {
     let server = Server::new(Duration::ZERO, false);
     let dir = tempfile::tempdir().unwrap();

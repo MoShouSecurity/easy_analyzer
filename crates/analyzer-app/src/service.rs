@@ -213,6 +213,28 @@ impl AnalysisService {
         selection: Option<&RecordSelection>,
         ctx: &ExecutionContext,
     ) -> Result<AnalysisOutcome> {
+        Self::analyze_ai_impl(session, options, selection, None, ctx)
+    }
+
+    /// Use the settings displayed by an interactive frontend. The caller freezes
+    /// this value at task start; no later config-file edit changes the request.
+    pub fn analyze_ai_with_config(
+        session: &AnalysisSession,
+        options: &AiOptions,
+        selection: Option<&RecordSelection>,
+        config: &core::ai::AiConfig,
+        ctx: &ExecutionContext,
+    ) -> Result<AnalysisOutcome> {
+        Self::analyze_ai_impl(session, options, selection, Some(config), ctx)
+    }
+
+    fn analyze_ai_impl(
+        session: &AnalysisSession,
+        options: &AiOptions,
+        selection: Option<&RecordSelection>,
+        config: Option<&core::ai::AiConfig>,
+        ctx: &ExecutionContext,
+    ) -> Result<AnalysisOutcome> {
         if let Some(selection) = selection {
             session.validate_selection(selection)?;
         }
@@ -237,7 +259,13 @@ impl AnalysisService {
                     records.push(record);
                 }
             }
-            let config = ConfigService::load(&options.config_path)?;
+            let config = match config {
+                Some(config) => {
+                    config.validate()?;
+                    config.clone()
+                }
+                None => ConfigService::load(&options.config_path)?,
+            };
             core::ai::analyze_report_with_context(
                 &records,
                 &config,

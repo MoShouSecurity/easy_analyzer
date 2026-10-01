@@ -1,6 +1,6 @@
 # Easy Analyzer
 
-Rust 开发的应急响应分析 CLI，支持 Windows/Linux x64 和 macOS Apple Silicon（arm64），可在 macOS 上分析 Windows、Linux 的离线日志。
+Rust 开发的应急响应分析工具，提供 CLI 和原生桌面 GUI，可在 macOS 上分析 Windows、Linux 的离线日志。CLI 支持 Windows/Linux x64 和 macOS Apple Silicon（arm64）；GUI 当前已在 macOS ARM64 验证。
 
 ## 主要功能
 
@@ -94,7 +94,7 @@ AI 回复未通过 JSON 或证据校验时，当前批次最多重试两次；�
 
 终端默认按风险级别汇总发现，显示关键字段和重点建议；`-n` 限制各区显示数量，`-R` 展开详情。HTML 提供响应式概览、重点发现和折叠详情，证据按来源分组，点击引用自动定位；JSON 顶部的 `summary` 提供风险概览，其余字段保留完整记录、发现及 AI 回复。导出后提示保存位置，来源或 AI 失败时保留已完成结果并显示诊断。规则命中是待核查线索，不代表攻击已成功。
 
-macOS 请手动导入离线日志，`-l` 仅适用于 Windows/Linux；utmp/wtmp/btmp 支持 Linux glibc x64 常见布局。当前不支持实时抓包、TCP 重组或 TLS 解密，GUI 后续开发。
+macOS 请手动导入离线日志，`-l` 仅适用于 Windows/Linux；utmp/wtmp/btmp 支持 Linux glibc x64 常见布局。当前不支持实时抓包、TCP 重组或 TLS 解密。
 
 Ctrl+C 可请求取消分析，保留已完成证据并尝试输出报告；已发送的 AI 请求等待返回或超时，再停止后续批次。
 
@@ -102,11 +102,29 @@ Ctrl+C 可请求取消分析，保留已完成证据并尝试输出报告；已�
 
 ## 架构
 
-`analyzer-cli → analyzer-app → analyzer-core`：命令行负责交互，应用层统一分析流程、会话、分页、任务和配置/导出，核心负责解析、规则、AI 与报告编码。未来 GUI 直接复用应用层，详见[架构与接口](docs/ARCHITECTURE.md)。
+`analyzer-cli / analyzer-gui → analyzer-app → analyzer-core`：前端负责交互，应用层统一分析流程、会话、分页、任务和配置/导出，核心负责解析、规则、AI 与报告编码，详见[架构与接口](docs/ARCHITECTURE.md)。
+
+## 现代桌面 GUI
+
+采用 Tauri 2、React、TypeScript、Tailwind CSS 和 shadcn/ui，沿用 Rust 分析层。以 1280×720 桌面窗口设计，提供导入、概览、日志、进程、网络、AI、报告与来源、设置八页，以及浅色/深色主题。正常启动为空会话；统计来自实际分析结果。详情可收起，窄窗口使用详情抽屉和图标导航。
+
+```sh
+# 首次安装前端依赖并生成静态资源
+npm --prefix crates/analyzer-gui/frontend ci
+npm --prefix crates/analyzer-gui/frontend run build
+cargo run -p analyzer-gui --locked
+# macOS ARM64 本地打包，保留 dist 中已有配置和报告
+bash scripts/package_gui_macos.sh
+open "dist/Easy Analyzer.app"
+```
+
+GUI 使用后台任务进行导入、筛选、关系构建、AI、配置和导出。AI 默认建议本地可疑项，只有主动点击才发送；当前筛选覆盖完整集合，原始包/载荷每次主动勾选。报告保留完整证据，不受界面分页限制。
+
+详见[GUI 使用与构建说明](docs/GUI.md)、[720p 布局](docs/GUI_DESIGN.md)和[GUI 验证记录](docs/GUI_VALIDATION.md)。八页双主题的 16 张真实 1280×720 截图入口为 `dist/gui-linear-720p/index.html`，另附 960×600 双主题检查截图（仍需人工复核的交互见验证记录）；图片和程序不纳入源码。现有标签发布流程仍只构建 CLI。
 
 ## 构建
 
-安装 Rust 1.95+、C/C++ 构建工具和 CMake 后，运行 `cargo build --release --locked`，程序生成在 `target/release/`。
+安装 Rust 1.95+、C/C++ 构建工具和 CMake 后，运行 `cargo build --release --locked`，程序生成在 `target/release/`。workspace 默认成员仍为 core/app/CLI；GUI 需显式选择 `-p analyzer-gui`。
 
 日常提交和分支推送不触发 GitHub Actions。只有明确要求“打包成 tag”时，才创建并推送 `vX.Y.Z` 发布标签；Actions 自动构建三平台程序、生成并校验 SHA-256，然后发布到 Releases。标签版本必须与源码版本一致。
 
