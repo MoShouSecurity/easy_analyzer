@@ -12,31 +12,16 @@ MACOSX_DEPLOYMENT_TARGET=13.0 cargo build -p analyzer-gui --release --locked --t
 gui_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
 gui_stage="$gui_root/dist/tauri-build"
 gui_bundle="$gui_stage/Easy Analyzer.app"
-mkdir -p "$gui_bundle/Contents/MacOS" "$gui_bundle/Contents/Resources"
-cp target/aarch64-apple-darwin/release/easy-analyzer-gui "$gui_bundle/Contents/MacOS/easy-analyzer-gui"
-cp crates/analyzer-gui/assets/OFL.txt "$gui_bundle/Contents/Resources/OFL.txt"
-cp crates/analyzer-gui/icons/easy-family/icon.icns "$gui_bundle/Contents/Resources/icon.icns"
-cp LICENSE "$gui_bundle/Contents/Resources/LICENSE"
-cat > "$gui_bundle/Contents/Info.plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>CFBundleName</key><string>Easy Analyzer</string>
-<key>CFBundleDisplayName</key><string>Easy Analyzer</string>
-<key>CFBundleIdentifier</key><string>com.easyanalyzer.gui</string>
-<key>CFBundleExecutable</key><string>easy-analyzer-gui</string>
-<key>CFBundleIconFile</key><string>icon.icns</string>
-<key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>$gui_version</string>
-<key>CFBundleVersion</key><string>$gui_version</string>
-<key>LSMinimumSystemVersion</key><string>13.0</string>
-<key>NSHighResolutionCapable</key><true/>
-<key>NSRequiresAquaSystemAppearance</key><false/>
-</dict></plist>
-PLIST
-codesign --force --sign - --timestamp=none "$gui_bundle"
-codesign --verify --strict "$gui_bundle"
-lipo "$gui_bundle/Contents/MacOS/easy-analyzer-gui" -verify_arch arm64
+# Assemble in a new directory so CI and local packaging seal the same resources.
+gui_fresh="$(mktemp -d "${TMPDIR:-/tmp/}easy-analyzer-gui.XXXXXX")"
+trap 'rm -rf "$gui_fresh"' EXIT
+bash scripts/bundle_gui_macos.sh target/aarch64-apple-darwin/release/easy-analyzer-gui "$gui_fresh/Easy Analyzer.app"
+mkdir -p "$gui_stage"
+ditto "$gui_fresh/Easy Analyzer.app" "$gui_bundle"
+gui_image="$gui_fresh/easy-analyzer-gui-macos-arm64.dmg"
+bash scripts/create_gui_dmg.sh "$gui_fresh/Easy Analyzer.app" "$gui_image"
+python3 scripts/release_assets.py verify-app-image "$gui_image" "$gui_version"
+cp "$gui_image" "$gui_stage/easy-analyzer-gui-macos-arm64.dmg"
 cp "$gui_bundle/Contents/MacOS/easy-analyzer-gui" "$gui_stage/easy-analyzer-gui"
 # A standalone executable needs its own signature, without the bundle Info.plist slot.
 codesign --force --sign - --timestamp=none "$gui_stage/easy-analyzer-gui"
@@ -58,5 +43,5 @@ if [[ "$gui_mode" != "--stage" ]]; then
   ditto "$gui_bundle" "$gui_root/dist/Easy Analyzer.app"
   codesign --verify --strict "$gui_root/dist/Easy Analyzer.app"
 fi
-(cd "$gui_stage" && shasum -a 256 easy-analyzer-gui > SHA256SUMS)
+(cd "$gui_stage" && shasum -a 256 easy-analyzer-gui easy-analyzer-gui-macos-arm64.dmg > SHA256SUMS)
 echo "GUI: $gui_bundle"

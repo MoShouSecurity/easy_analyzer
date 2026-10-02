@@ -1,5 +1,10 @@
 # 更新记录
 
+## 1.3.1 — 2026-10-02
+
+- macOS ARM64 GUI 改为发布未压缩的只读 DMG，打开后可将 `Easy Analyzer.app` 拖入“应用程序”；包含产品图标、应用信息、许可证及 ad-hoc 签名，不再发布该平台的 GUI 裸可执行文件。
+- CI 与本地打包共用应用包构建脚本；挂载 DMG 后验证资源完整性、版本、ARM64 架构、可执行权限与签名，校验文件覆盖 DMG 本身。Windows/Linux 的 CLI/GUI 以及 macOS CLI 附件保持不变，已有发布版本不覆盖。
+
 ## 1.3.0 — 2026-10-02
 
 - 桌面图标改用 easy 系列 Easy Analyzer 碧绿色斜体 E 与柱形标识，同步 Windows ICO、macOS ICNS、Linux PNG 和 GUI 标识；16/24/32 px 使用独立光学校正母版，提供可复现的 SVG 导出脚本，保留旧图标。

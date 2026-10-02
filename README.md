@@ -130,12 +130,12 @@ AI 设置支持按模型实际上下文上限自动规划，发送前预览完�
 
 日常提交和分支推送不触发 GitHub Actions。只有明确要求“打包成 tag”时，才创建并推送 `vX.Y.Z` 发布标签；Actions 自动构建三平台的 CLI 和 GUI、生成并校验 SHA-256，然后发布到 Releases。标签版本必须与 Rust workspace、Cargo.lock、Tauri 配置和 npm 版本一致。
 
-[Releases](https://github.com/MoShouSecurity/easy_analyzer/releases) 的后续新版本附件包含以下六个独立程序及 `SHA256SUMS`，不附文档、样本、配置或压缩包：
+[Releases](https://github.com/MoShouSecurity/easy_analyzer/releases) 的后续新版本包含以下六个附件及 `SHA256SUMS`，macOS GUI 使用含 `.app` 的未压缩 DMG，其余为独立程序；不附文档、样本、配置或其他压缩包：
 
 | 平台 | CLI（命令行） | GUI（图形界面） |
 | --- | --- | --- |
 | Windows x64 | `easy-analyzer-cli-windows-x64.exe` | `easy-analyzer-gui-windows-x64.exe` |
 | Linux x64 | `easy-analyzer-cli-linux-x64` | `easy-analyzer-gui-linux-x64` |
-| macOS ARM64 | `easy-analyzer-cli-macos-arm64` | `easy-analyzer-gui-macos-arm64` |
+| macOS ARM64 | `easy-analyzer-cli-macos-arm64` | `easy-analyzer-gui-macos-arm64.dmg` |
 
-Linux/macOS 下载后需 `chmod +x`。macOS CLI 支持 11.0+、GUI 支持 13.0+，使用 ad-hoc 签名，未公证；GUI `.app` 仍可本地打包。Windows GUI 需要 WebView2 Runtime；Linux GUI 需要桌面环境与 GTK 3/WebKitGTK 4.1 运行库，Ubuntu 22.04 可安装 `libwebkit2gtk-4.1-0`。Windows/Linux GUI 的实际运行验证状态见[验证记录](docs/GUI_VALIDATION.md)。
+Linux 程序和 macOS CLI 下载后需 `chmod +x`；macOS GUI 打开 DMG 后将 `Easy Analyzer.app` 拖入“应用程序”，再双击打开。macOS CLI 支持 11.0+、GUI 支持 13.0+，使用 ad-hoc 签名，未公证；SHA256SUMS 校验 macOS GUI 的 DMG 文件；GUI `.app` 也可本地打包。Windows GUI 需要 WebView2 Runtime；Linux GUI 需要桌面环境与 GTK 3/WebKitGTK 4.1 运行库，Ubuntu 22.04 可安装 `libwebkit2gtk-4.1-0`。Windows/Linux GUI 的实际运行验证状态见[验证记录](docs/GUI_VALIDATION.md)。

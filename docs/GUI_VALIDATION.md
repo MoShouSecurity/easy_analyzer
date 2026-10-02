@@ -166,3 +166,11 @@
 - Rust workspace、Cargo.lock、Tauri 配置及 npm 清单/锁文件统一为 1.3.0，更新记录包含本次全部源码和图标修改。发布源码校验及 8 项发布脚本测试通过。
 - 前端格式检查、39 项测试、TypeScript 检查与生产构建通过；Rust 格式、diff 检查、workspace 全目标 Clippy（警告视为错误）、全部 77 项测试（含 GUI 和文档测试）及 macOS ARM64 CLI/GUI release 构建通过。AI 请求测试使用本机回环模拟服务，没有调用真实 DeepSeek/GLM。
 - 标签 CI 继续构建 Windows x64 MSVC、Linux x64、macOS ARM64 的 CLI/GUI 六个独立程序及 SHA256SUMS。此前记录的 Windows/Linux 桌面交互、实际 UAC 授权/取消、权限增量及真实服务限制仍有效；构建成功不等同于这些交互已通过验收。
+
+## v1.3.1 macOS 应用包发布（2026-10-02）
+
+- macOS GUI 附件改为未压缩只读 DMG（UDRO），内含 `Easy Analyzer.app` 及“应用程序”安装链接；其余五个平台/界面附件保持独立程序。CI 与本地安装共用应用包构建及 DMG 脚本，SHA256SUMS 校验 DMG 本身，不覆盖 v1.3.0。
+- 发布脚本 14 项测试通过，覆盖附件完整性、旧 GUI 裸文件与伪装 DMG、缺失图标、额外配置、应用标识/版本/架构错误、压缩映像拒绝及校验失败后卸载。Windows 测试主机不提供 Unix 执行权限语义，执行权限在真实 macOS 映像挂载检查中验证。
+- 前端 39 项测试、格式、TypeScript 及生产构建通过；Rust 77 项测试、workspace 全目标 Clippy（警告视为错误）、格式与差异检查通过。按 CI 参数构建 macOS ARM64 CLI（部署目标 11.0）和 GUI（13.0）通过，工作流 YAML 及全部 9 个 shell 段语法检查通过。
+- 本机 v1.3.1 DMG 创建、格式检查、只读挂载、应用资源清单、ARM64 Mach-O、执行权限、ad-hoc 签名及映像内真实程序 `--version` 全部通过，校验后卸载。dist 中的 `.app`、独立 GUI 和 DMG 已更新，用户配置、报告与案件保留；运行中的旧窗口没有退出或重启。
+- 未进行 Apple 公证；下载后的 Gatekeeper 首次打开流程及拖入系统“应用程序”的实际操作未作为本轮自动验收。Windows/Linux 桌面交互、UAC 授权与真实 AI 服务的既有待验证范围保持原记录。

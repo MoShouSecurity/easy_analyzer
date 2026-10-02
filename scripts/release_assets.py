@@ -4,18 +4,28 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import plistlib
 import re
+import stat
 import subprocess
+import sys
+import tempfile
 import tomllib
 
 
 PLATFORMS = {"linux-x64": "", "windows-x64": ".exe", "macos-arm64": ""}
+APP_NAME = "Easy Analyzer.app"
+APP_FILES = {
+    "Contents/Info.plist", "Contents/MacOS/easy-analyzer-gui",
+    "Contents/Resources/icon.icns", "Contents/Resources/LICENSE",
+    "Contents/Resources/OFL.txt", "Contents/_CodeSignature/CodeResources",
+}
 
 
 def asset_names(platform=None):
     platforms = [platform] if platform else PLATFORMS
     return [
-        f"easy-analyzer-{kind}-{name}{PLATFORMS[name]}"
+        f"easy-analyzer-{kind}-{name}{'.dmg' if name == 'macos-arm64' and kind == 'gui' else PLATFORMS[name]}"
         for name in platforms
         for kind in ("cli", "gui")
     ]
@@ -46,16 +56,94 @@ def validate_source(root, tag):
             raise ValueError("GUI npm root package version mismatch")
 
 
+def validate_app_bundle(bundle, version):
+    """Reject missing resources, extra data, links and mismatched bundle metadata."""
+    if bundle.name != APP_NAME or bundle.is_symlink() or not bundle.is_dir():
+        raise ValueError("Invalid macOS app bundle")
+    expected = {bundle / name for name in APP_FILES}
+    directories = {parent for path in expected for parent in path.parents if parent != bundle and bundle in parent.parents}
+    entries = list(bundle.rglob("*"))
+    if any(path.is_symlink() for path in entries):
+        raise ValueError("App bundle contains a symlink")
+    if set(entries) != expected | directories:
+        raise ValueError("App bundle must contain exactly the executable, app metadata, icon, licenses and signature")
+    if any(not stat.S_ISREG(path.stat().st_mode) or path.stat().st_size == 0 for path in expected):
+        raise ValueError("Invalid app bundle file")
+    program = bundle / "Contents/MacOS/easy-analyzer-gui"
+    # Windows test hosts do not preserve Unix execution modes; macOS verification does.
+    if sys.platform != "win32" and not program.stat().st_mode & 0o111:
+        raise ValueError("App executable has no execute permission")
+    with program.open("rb") as executable:
+        if executable.read(8) != b"\xcf\xfa\xed\xfe\x0c\x00\x00\x01":
+            raise ValueError("App executable must be macOS ARM64")
+    try:
+        with (bundle / "Contents/Info.plist").open("rb") as source:
+            info = plistlib.load(source)
+        required = {
+            "CFBundleName": "Easy Analyzer", "CFBundleIdentifier": "com.easyanalyzer.gui",
+            "CFBundleExecutable": "easy-analyzer-gui", "CFBundleIconFile": "icon.icns",
+            "CFBundlePackageType": "APPL", "LSMinimumSystemVersion": "13.0",
+            "CFBundleShortVersionString": version, "CFBundleVersion": version,
+        }
+        if any(info.get(key) != value for key, value in required.items()):
+            raise ValueError("App metadata differs from release version or identity")
+    except (plistlib.InvalidFileException, TypeError, AttributeError) as error:
+        raise ValueError("Invalid app metadata") from error
+
+
+def validate_image_file(path):
+    # UDIF images end with a 512-byte 'koly' trailer; reject a renamed raw executable.
+    if path.is_symlink() or not path.is_file() or path.stat().st_size < 512:
+        raise ValueError("Invalid macOS disk image")
+    with path.open("rb") as image:
+        image.seek(-512, 2)
+        if image.read(4) != b"koly":
+            raise ValueError("Expected a macOS UDIF disk image")
+
+
+def verify_app_image(path, version):
+    validate_image_file(path)
+    result = subprocess.run(["hdiutil", "imageinfo", "-plist", str(path.resolve())], capture_output=True, check=True, timeout=60)
+    if plistlib.loads(result.stdout).get("Format") != "UDRO":
+        raise ValueError("macOS GUI must be an uncompressed read-only disk image (UDRO)")
+    with tempfile.TemporaryDirectory(prefix="easy-analyzer-image-check-") as temporary:
+        mount = Path(temporary) / "mount"
+        mount.mkdir()
+        subprocess.run(["hdiutil", "attach", "-readonly", "-nobrowse", "-noautoopen", "-mountpoint", str(mount), str(path.resolve())], check=True, capture_output=True, timeout=60)
+        try:
+            # macOS may add these filesystem bookkeeping directories when mounted.
+            allowed = {APP_NAME, "Applications", ".Trashes", ".fseventsd", ".Spotlight-V100", ".HFS+ Private Directory Data\r", "HFS+ Private Data"}
+            if {entry.name for entry in mount.iterdir()} - allowed:
+                raise ValueError("Unexpected files in macOS disk image")
+            applications = mount / "Applications"
+            if not applications.is_symlink() or str(applications.readlink()) != "/Applications":
+                raise ValueError("Disk image must include the Applications installation link")
+            bundle = mount / APP_NAME
+            validate_app_bundle(bundle, version)
+            subprocess.run(["codesign", "--verify", "--strict", str(bundle)], check=True, timeout=30)
+            verify_program_version(bundle / "Contents/MacOS/easy-analyzer-gui", "gui", version)
+        finally:
+            subprocess.run(["hdiutil", "detach", str(mount)], check=True, capture_output=True, timeout=60)
+
+
+def verify_program_version(path, kind, version):
+    result = subprocess.run(
+        [str(path.resolve()), "--version"],
+        capture_output=True, text=True, check=True, timeout=30,
+    )
+    expected = f"easy-analyzer {version}" if kind == "cli" else f"easy-analyzer-gui {version} (Tauri)"
+    if result.stdout.strip() != expected:
+        raise ValueError(f"Unexpected {kind} program version: {result.stdout!r}")
+
+
 def verify_programs(directory, platform, version):
     # Capture explicit pipes, including Windows GUI-subsystem programs without a console.
     for name, kind in zip(asset_names(platform), ("cli", "gui")):
-        result = subprocess.run(
-            [str((directory / name).resolve()), "--version"],
-            capture_output=True, text=True, check=True, timeout=30,
-        )
-        expected = f"easy-analyzer {version}" if kind == "cli" else f"easy-analyzer-gui {version} (Tauri)"
-        if result.stdout.strip() != expected:
-            raise ValueError(f"Unexpected {kind} program version: {result.stdout!r}")
+        path = directory / name
+        if platform != "macos-arm64" or kind != "gui":
+            verify_program_version(path, kind, version)
+            continue
+        verify_app_image(path, version)
 
 
 def checksum_manifest(directory):
@@ -63,7 +151,7 @@ def checksum_manifest(directory):
     entries = {p.name for p in directory.iterdir()}
     # Re-running locally may replace a manifest, but no other file or folder is allowed.
     if entries - {"SHA256SUMS"} != set(names):
-        raise ValueError(f"Expected exactly six CLI/GUI programs, found: {sorted(entries)}")
+        raise ValueError(f"Expected exactly six CLI/GUI assets, found: {sorted(entries)}")
     manifest = directory / "SHA256SUMS"
     if manifest.is_symlink() or (manifest.exists() and not manifest.is_file()):
         raise ValueError("Invalid checksum manifest")
@@ -72,6 +160,8 @@ def checksum_manifest(directory):
         path = directory / name
         if path.is_symlink() or not path.is_file() or path.stat().st_size == 0:
             raise ValueError(f"Invalid release program: {name}")
+        if name.endswith(".dmg"):
+            validate_image_file(path)
         with path.open("rb") as program:
             digest = hashlib.file_digest(program, "sha256").hexdigest()
         lines.append(f"{digest}  {name}\n")
@@ -90,6 +180,9 @@ def main():
     programs.add_argument("version")
     checksums = commands.add_parser("checksums")
     checksums.add_argument("directory", type=Path)
+    app = commands.add_parser("verify-app-image")
+    app.add_argument("image", type=Path)
+    app.add_argument("version")
     commands.add_parser("names")
     args = parser.parse_args()
     if args.command == "validate-source":
@@ -98,6 +191,8 @@ def main():
         verify_programs(args.directory, args.platform, args.version)
     elif args.command == "checksums":
         checksum_manifest(args.directory)
+    elif args.command == "verify-app-image":
+        verify_app_image(args.image, args.version)
     else:
         print("\n".join(asset_names() + ["SHA256SUMS"]))
 

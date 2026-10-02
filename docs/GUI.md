@@ -50,15 +50,15 @@ bash scripts/package_gui_macos.sh --stage
 bash scripts/package_gui_macos.sh
 ```
 
-打包脚本先构建至 `dist/tauri-build/Easy Analyzer.app`，检查版本、ARM64 和签名，再安装到 dist。已有独立 GUI 与 .app 先备份至 dist/backups；源码迁移前的快照也在该目录。
+打包脚本先构建至 `dist/tauri-build/Easy Analyzer.app`，检查版本、ARM64 和签名，再安装到 dist。同时生成 `dist/tauri-build/easy-analyzer-gui-macos-arm64.dmg`。CI 与本地脚本共用 `scripts/bundle_gui_macos.sh` 封装应用信息、图标、许可证和签名。已有独立 GUI 与 .app 先备份至 dist/backups；源码迁移前的快照也在该目录。
 
 ## CI 与下载
 
-v1.1.0 标签使用原 CLI 发布流程。从 v1.1.1 标签起同时构建 Windows x64、Linux x64、macOS ARM64 的 CLI 和 GUI，附件名称分别为 `easy-analyzer-cli-<平台>`、`easy-analyzer-gui-<平台>`（Windows 加 `.exe`）。六个独立程序统一由 `SHA256SUMS` 校验；不发布截图、配置、样本或压缩包，macOS `.app` 使用上述本地打包脚本生成。
+v1.1.0 标签使用原 CLI 发布流程。从 v1.1.1 标签起同时构建 Windows x64、Linux x64、macOS ARM64 的 CLI 和 GUI，附件名称分别为 `easy-analyzer-cli-<平台>`、`easy-analyzer-gui-<平台>`（Windows 加 `.exe`）。v1.1.1 至 v1.3.0 发布六个独立程序。从 v1.3.1 起，macOS GUI 改为 `easy-analyzer-gui-macos-arm64.dmg`，打开后为 `Easy Analyzer.app`；其余五个附件保持独立程序。`SHA256SUMS` 校验六个附件（macOS GUI 校验 DMG 本身），不发布截图、配置、样本或其他压缩包。
 
-CI 安装 Node 24 与平台构建依赖，通过前端格式检查、测试和类型/生产构建后，将静态资源嵌入 GUI。Rust workspace、Cargo.lock、Tauri 与 npm 的版本都必须匹配标签。各平台执行两个程序的 `--version`；macOS 另外验证 ARM64 与 ad-hoc 签名。合并附件时拒绝缺失程序、空文件或额外文件，发布前核对精确的六程序加校验文件清单。重跑只允许补全草稿，不能覆盖已发布版本。
+CI 安装 Node 24 与平台构建依赖，通过前端格式检查、测试和类型/生产构建后，将静态资源嵌入 GUI。Rust workspace、Cargo.lock、Tauri 与 npm 的版本都必须匹配标签。各平台执行两个程序的 `--version`；macOS 另外验证 ARM64 与 ad-hoc 签名。合并附件时拒绝缺失程序、空文件或额外文件，发布前核对精确的六附件加校验文件清单；macOS GUI 磁盘映像包含 `.app` 与“应用程序”安装链接，应用包内只包含程序、应用信息、图标、许可证和签名，挂载后验证 ARM64、签名与真实程序版本。重跑只允许补全草稿，不能覆盖已发布版本。
 
-Linux/macOS 下载后需 `chmod +x` 再运行。Windows GUI 需要 Microsoft Edge WebView2 Runtime。Linux GUI 需要桌面环境与 GTK 3/WebKitGTK 4.1，Ubuntu 22.04 可安装 `libwebkit2gtk-4.1-0`；构建依赖遵循 [Tauri 官方前置要求](https://v2.tauri.app/start/prerequisites/)。macOS GUI 要求 13.0+，CLI 要求 11.0+。CI 构建与版本检查不代表所有桌面交互已实机验收，各平台状态仍按验证记录说明。
+Linux 程序和 macOS CLI 下载后需 `chmod +x` 再运行。macOS GUI 打开 `.dmg`，将 `Easy Analyzer.app` 拖入“应用程序”后打开，无需手动设置执行权限。Windows GUI 需要 Microsoft Edge WebView2 Runtime。Linux GUI 需要桌面环境与 GTK 3/WebKitGTK 4.1，Ubuntu 22.04 可安装 `libwebkit2gtk-4.1-0`；构建依赖遵循 [Tauri 官方前置要求](https://v2.tauri.app/start/prerequisites/)。macOS GUI 要求 13.0+，CLI 要求 11.0+。CI 构建与版本检查不代表所有桌面交互已实机验收，各平台状态仍按验证记录说明。
 
 ## AI 页的证据筛选与结果阅读
 

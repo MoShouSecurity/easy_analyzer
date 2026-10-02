@@ -79,17 +79,20 @@ jobs:
         env:
           MACOSX_DEPLOYMENT_TARGET: '13.0'
         run: cargo build -p analyzer-gui --release --locked --target "$BUILD_TARGET"
-      - name: Stage CLI and GUI programs
+      - name: Stage CLI and GUI release assets
         run: |
           mkdir -p release
           cp "target/$BUILD_TARGET/release/easy-analyzer$BINARY_SUFFIX" "release/easy-analyzer-cli-$RELEASE_PLATFORM$BINARY_SUFFIX"
-          cp "target/$BUILD_TARGET/release/easy-analyzer-gui$BINARY_SUFFIX" "release/easy-analyzer-gui-$RELEASE_PLATFORM$BINARY_SUFFIX"
           if [[ "$RUNNER_OS" == macOS ]]; then
-            for program in release/*; do
-              codesign --force --sign - --timestamp=none "$program"
-              codesign --verify --strict "$program"
-              lipo "$program" -verify_arch arm64
-            done
+            cli_program="release/easy-analyzer-cli-$RELEASE_PLATFORM"
+            codesign --force --sign - --timestamp=none "$cli_program"
+            codesign --verify --strict "$cli_program"
+            test "$(lipo -archs "$cli_program")" = arm64
+            gui_bundle="$RUNNER_TEMP/Easy Analyzer.app"
+            bash scripts/bundle_gui_macos.sh "target/$BUILD_TARGET/release/easy-analyzer-gui" "$gui_bundle"
+            bash scripts/create_gui_dmg.sh "$gui_bundle" "release/easy-analyzer-gui-macos-arm64.dmg"
+          else
+            cp "target/$BUILD_TARGET/release/easy-analyzer-gui$BINARY_SUFFIX" "release/easy-analyzer-gui-$RELEASE_PLATFORM$BINARY_SUFFIX"
           fi
           python scripts/release_assets.py verify-programs release "$RELEASE_PLATFORM" "${RELEASE_TAG#v}"
       - uses: actions/upload-artifact@v4
@@ -132,13 +135,13 @@ jobs:
           | --- | --- | --- |
           | Windows x64 | easy-analyzer-cli-windows-x64.exe | easy-analyzer-gui-windows-x64.exe |
           | Linux x64 | easy-analyzer-cli-linux-x64 | easy-analyzer-gui-linux-x64 |
-          | macOS ARM64 | easy-analyzer-cli-macos-arm64 | easy-analyzer-gui-macos-arm64 |
+          | macOS ARM64 | easy-analyzer-cli-macos-arm64 | easy-analyzer-gui-macos-arm64.dmg |
 
-          SHA256SUMS 包含以上六个独立程序的 SHA-256 校验值。源码、配置、样本与截图不作为附件发布。
+          SHA256SUMS 包含以上六个附件的 SHA-256 校验值，其中 macOS GUI 校验 DMG 本身。源码、配置、样本与截图不作为附件发布。
           Windows GUI 需要 Microsoft Edge WebView2 Runtime。
           Linux GUI 需要桌面环境、GTK 3 与 WebKitGTK 4.1 运行库（Ubuntu 22.04 可安装 libwebkit2gtk-4.1-0）。
-          Linux/macOS 下载后先 chmod +x，再直接运行对应程序。
-          macOS CLI 要求 11.0+，GUI 要求 13.0+；仅支持 Apple Silicon ARM64，采用 ad-hoc 签名，未进行 Apple 公证。GUI .app 可按 docs/GUI.md 在本地打包。
+          Linux 程序和 macOS CLI 下载后先 chmod +x，再直接运行。
+          macOS GUI：打开未压缩的 .dmg，将 Easy Analyzer.app 拖入“应用程序”后打开，无需手动 chmod。GUI 要求 13.0+，CLI 要求 11.0+；仅支持 Apple Silicon ARM64，采用 ad-hoc 签名，未进行 Apple 公证。如系统阻止打开，可在“系统设置 → 隐私与安全性”确认来源后允许打开。
           NOTES
       - name: Upload clean release draft
         shell: bash
