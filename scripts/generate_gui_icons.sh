@@ -9,7 +9,6 @@ if [[ ! -x "$icon_cli" ]]; then
 fi
 # Rebuild from the vendored SVG masters; no dependency on the shared design library.
 python3 - "$icon_root" "$icon_cli" <<'PY'
-import hashlib
 from pathlib import Path
 import shutil
 import struct
@@ -46,30 +45,30 @@ with tempfile.TemporaryDirectory(prefix='easy-analyzer-icons-') as temporary:
         cursor += length
     assert not any(chunk[:4] == b'TOC ' for chunk in chunks), 'Unexpected ICNS table of contents'
     (dest / 'icon.icns').write_bytes(icns[:8] + b''.join(sorted(chunks, key=lambda chunk: chunk[:4])))
-    for size in sizes:
+    # Preserve independently rendered small frames; resizing loses micro adjustments.
+    frames = []
+    for size in ico_sizes:
         folder = 'micro' if size <= 32 else 'regular'
-        shutil.copyfile(stage / folder / f'{size}x{size}.png', dest / f'{size}x{size}.png')
-
-# Preserve independently rendered small frames; resizing the large PNG loses micro adjustments.
-frames = []
-for size in ico_sizes:
-    data = (dest / f'{size}x{size}.png').read_bytes()
-    assert data[:8] == b'\x89PNG\r\n\x1a\n'
-    assert struct.unpack_from('>II', data, 16) == (size, size)
-    assert data[25] == 6  # RGBA PNG
-    frames.append(data)
-offset = 6 + 16 * len(frames)
-entries = []
-for size, data in zip(ico_sizes, frames):
-    entries.append(struct.pack('<BBBBHHII', size % 256, size % 256, 0, 0, 1, 32, len(data), offset))
-    offset += len(data)
-(dest / 'icon.ico').write_bytes(struct.pack('<HHH', 0, 1, len(frames)) + b''.join(entries) + b''.join(frames))
-shutil.copyfile(dest / '512x512.png', dest / 'icon.png')
-shutil.copyfile(dest / '256x256.png', dest / '128x128@2x.png')
+        data = (stage / folder / f'{size}x{size}.png').read_bytes()
+        assert data[:8] == b'\x89PNG\r\n\x1a\n'
+        assert struct.unpack_from('>II', data, 16) == (size, size)
+        assert data[25] == 6  # RGBA PNG
+        frames.append(data)
+    offset = 6 + 16 * len(frames)
+    entries = []
+    for size, data in zip(ico_sizes, frames):
+        entries.append(struct.pack('<BBBBHHII', size % 256, size % 256, 0, 0, 1, 32, len(data), offset))
+        offset += len(data)
+    (dest / 'icon.ico').write_bytes(struct.pack('<HHH', 0, 1, len(frames)) + b''.join(entries) + b''.join(frames))
+    # Only persist resources referenced by Tauri; other sizes stay temporary.
+    for source, name in [
+        ('micro/32x32.png', '32x32.png'),
+        ('regular/128x128.png', '128x128.png'),
+        ('regular/256x256.png', '128x128@2x.png'),
+    ]:
+        shutil.copyfile(stage / source, dest / name)
 public = root / 'crates/analyzer-gui/frontend/public'
 public.mkdir(parents=True, exist_ok=True)
 shutil.copyfile(dest / 'icon-micro.svg', public / 'easy-analyzer.svg')
-assets = sorted(p for p in dest.iterdir() if p.suffix in {'.png', '.ico', '.icns', '.svg'})
-(dest / 'SHA256SUMS').write_text(''.join(f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n' for p in assets))
 print(f'Desktop icons: {dest}')
 PY
