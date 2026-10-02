@@ -34,7 +34,7 @@ pub use analyzer_core::{
 };
 pub use config::ConfigService;
 pub use export::{ExportPlan, ExportResult, OutputFormat, RenderOptions};
-pub use service::AnalysisService;
+pub use service::{AnalysisService, PreparedAiAnalysis};
 pub use session::{AnalysisSession, Page, RecordSelection, RecordSummary};
 pub use task::{TaskEvent, TaskHandle, TaskId};
 pub use types::*;

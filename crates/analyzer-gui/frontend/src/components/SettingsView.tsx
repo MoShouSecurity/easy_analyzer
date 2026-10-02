@@ -149,6 +149,49 @@ export function SettingsView({
             )}
           </div>
         </div>
+        <div className="form-section">
+          <h3>发送规划</h3>
+          <label className="form-field">
+            规划方式
+            <Select
+              label="发送规划方式"
+              value={draft.context_tokens === null ? "bytes" : "context"}
+              disabled={busy}
+              onChange={(value) =>
+                onChange({
+                  ...draft,
+                  context_tokens: value === "context" ? 1000000 : null,
+                })
+              }
+              options={[
+                { value: "context", label: "自动：按模型上下文预算" },
+                { value: "bytes", label: "兼容：按批次字节预算" },
+              ]}
+            />
+          </label>
+          {draft.context_tokens !== null && (
+            <label className="form-field">
+              模型上下文上限 / token
+              <input
+                className="input"
+                type="number"
+                aria-label="模型上下文上限"
+                min="4096"
+                step="1024"
+                value={draft.context_tokens}
+                disabled={busy}
+                onChange={(e) =>
+                  onChange({ ...draft, context_tokens: Number(e.target.value) })
+                }
+              />
+            </label>
+          )}
+          <p>
+            按当前模型和服务的实际上限填写；1M 为 1000000。自动模式预留输出及
+            20% 安全余量，超出预算才分批，分批后汇总关联线索。Token
+            为本地保守估算。
+          </p>
+        </div>
         <details className="form-section advanced-settings">
           <summary>高级参数</summary>
           <div className="advanced-grid">
@@ -169,12 +212,12 @@ export function SettingsView({
               />
             </label>
             <label>
-              批次字节预算
+              批次字节预算（兼容模式）
               <input
                 className="input"
                 type="number"
                 value={draft.batch_bytes}
-                disabled={busy}
+                disabled={busy || draft.context_tokens !== null}
                 onChange={(e) =>
                   onChange({ ...draft, batch_bytes: Number(e.target.value) })
                 }

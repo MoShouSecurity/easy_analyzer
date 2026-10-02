@@ -23,6 +23,13 @@ fn rpc<T>(r: Result<T>) -> Rpc<T> {
 }
 #[derive(Clone)]
 pub struct Desktop(pub Arc<Mutex<Inner>>);
+pub struct FrozenAi {
+    id: u64,
+    request: AiRequest,
+    config: core::ai::AiConfig,
+    epoch: u64,
+    prepared: PreparedAiAnalysis,
+}
 pub struct Inner {
     pub session: Option<AnalysisSession>,
     pub epoch: u64,
@@ -41,6 +48,9 @@ pub struct Inner {
     pub data_dir: PathBuf,
     pub args: Args,
     pub elevation_pending: bool,
+    pub next_ai_preview: u64,
+    pub ai_preview: Option<FrozenAi>,
+    pub preview_cancel: Option<CancellationToken>,
 }
 impl Desktop {
     pub fn new(data_dir: PathBuf, args: Args) -> Self {
@@ -62,6 +72,9 @@ impl Desktop {
             data_dir,
             args,
             elevation_pending: false,
+            next_ai_preview: 0,
+            ai_preview: None,
+            preview_cancel: None,
         })))
     }
     pub fn lock(&self) -> Result<MutexGuard<'_, Inner>> {
@@ -260,9 +273,26 @@ fn start_job(
     label: &str,
     run: impl FnOnce(&ExecutionContext) -> Result<WorkerResult> + Send + 'static,
 ) -> Result<TaskMessage> {
+    start_session_job(app, desktop, kind, label, None, run)
+}
+fn start_session_job(
+    app: AppHandle,
+    desktop: Desktop,
+    kind: &str,
+    label: &str,
+    expected_session: Option<u64>,
+    run: impl FnOnce(&ExecutionContext) -> Result<WorkerResult> + Send + 'static,
+) -> Result<TaskMessage> {
     let mut s = desktop.lock()?;
     if s.busy.is_some() || s.elevation_pending {
         bail!("请等待当前任务完成");
+    }
+    s.ai_preview = None;
+    if let Some(token) = s.preview_cancel.take() {
+        token.cancel();
+    }
+    if expected_session.is_some_and(|id| s.session.as_ref().map(AnalysisSession::id) != Some(id)) {
+        bail!("会话已变化，请重新计算发送预览");
     }
     let handle = task::spawn_operation(run);
     let mut message = TaskMessage {
@@ -300,9 +330,21 @@ fn start_job(
                 }
             }
             if let Some(p) = latest {
-                message.stage = Some(stage_name(p.stage));
+                message.stage = Some(
+                    if p.stage == Stage::Ai
+                        && p.source
+                            .as_deref()
+                            .is_some_and(|source| source.starts_with("跨批汇总"))
+                    {
+                        p.source.unwrap()
+                    } else if p.source.as_deref() == Some("跨批汇总") {
+                        "准备跨批汇总".into()
+                    } else {
+                        stage_name(p.stage)
+                    },
+                );
                 message.completed = Some(p.completed);
-                message.total = if p.stage == Stage::Ai { None } else { p.total };
+                message.total = p.total;
             }
             message.status = status_name(h.status());
             let result = h.try_result();
@@ -444,18 +486,17 @@ pub fn build_view(
         sources: session.source_page(request.source_offset, 100)?,
         record_sources: BTreeMap::new(),
         diagnostics: session.diagnostic_page(request.diagnostic_offset, 50)?,
-        runs: run_summaries(session, request.run_offset, 20)?,
+        runs: run_summaries(session, request.run_offset, 20, ctx)?,
         outside: false,
         offset: filters.offset,
         selection: Default::default(),
     };
     if matches!(request.screen, Screen::Overview | Screen::Ai) {
-        view.findings = Some(session.finding_page(
-            &filters.finding_filter(),
-            filters.offset,
-            filters.limit,
-            ctx,
-        )?);
+        let mut filter = filters.finding_filter();
+        if request.screen == Screen::Ai {
+            filter.origin = FindingOrigin::Ai;
+        }
+        view.findings = Some(session.finding_page(&filter, filters.offset, filters.limit, ctx)?);
     }
     let mut valid = None;
     if request.screen.evidence() {
@@ -555,29 +596,44 @@ fn run_summaries(
     session: &AnalysisSession,
     offset: usize,
     limit: usize,
+    ctx: &ExecutionContext,
 ) -> Result<Page<RunSummary>> {
-    session.with_report(|report| Page {
-        offset,
-        total: report.ai_runs.len(),
-        items: report
-            .ai_runs
-            .iter()
-            .enumerate()
-            .rev()
-            .skip(offset)
-            .take(limit)
-            .map(|(index, r)| RunSummary {
-                index,
-                model: r.model.clone(),
-                endpoint: r.endpoint.clone(),
-                batches: r.batches,
-                completed: r.completed(),
-                analyzed: r.analyzed_records,
-                selected: r.selected(),
-                include_payload: r.include_payload,
-            })
-            .collect(),
-    })
+    session.with_report(|report| -> Result<Page<RunSummary>> {
+        let mut summaries = BTreeMap::new();
+        for (i, diagnostic) in report.diagnostics.iter().enumerate() {
+            ctx.tick(Stage::Query, None, i, Some(report.diagnostics.len()))?;
+            if diagnostic.source == "AI 本地整理"
+                && let Some(position) = &diagnostic.position
+            {
+                summaries.insert(position.as_str(), diagnostic.message.as_str());
+            }
+        }
+        Ok(Page {
+            offset,
+            total: report.ai_runs.len(),
+            items: report
+                .ai_runs
+                .iter()
+                .enumerate()
+                .rev()
+                .skip(offset)
+                .take(limit)
+                .map(|(index, r)| RunSummary {
+                    index,
+                    model: r.model.clone(),
+                    endpoint: r.endpoint.clone(),
+                    batches: r.batches,
+                    completed: r.completed(),
+                    analyzed: r.analyzed_records,
+                    selected: r.selected(),
+                    include_payload: r.include_payload,
+                    local_summary: summaries
+                        .get(format!("ai-run:{}", index + 1).as_str())
+                        .map(|s| (*s).to_owned()),
+                })
+                .collect(),
+        })
+    })?
 }
 fn commit_view(
     desktop: &Desktop,
@@ -722,6 +778,124 @@ pub fn config_operation(
         }
     })())
 }
+fn ai_options(s: &Inner, request: &AiRequest) -> Result<(AiOptions, Option<RecordSelection>)> {
+    if !s.config_loaded {
+        bail!("请先加载或保存配置");
+    }
+    let scope = match request.scope.as_str() {
+        "all" => AiScope::All,
+        "matches" => AiScope::Matches,
+        "suspicious" => AiScope::Suspicious,
+        _ => bail!("无效的 AI 范围"),
+    };
+    let selected = if scope == AiScope::Matches {
+        if request.selection_id != Some(s.selection_info.id) {
+            bail!("筛选范围已变化，请确认最新有效筛选");
+        }
+        Some(s.selection.clone().ok_or_else(|| anyhow!("尚无有效筛选"))?)
+    } else {
+        None
+    };
+    if s.args.qa_ai
+        && !(s.config.base_url.starts_with("http://127.0.0.1:")
+            || s.config.base_url.starts_with("http://[::1]:"))
+    {
+        bail!("验收 AI 仅允许本机回环模拟服务");
+    }
+    Ok((
+        AiOptions {
+            config_path: s.prefs.config_path.clone().into(),
+            scope,
+            include_payload: request.include_payload,
+        },
+        selected,
+    ))
+}
+
+#[tauri::command]
+pub async fn prepare_ai(state: State<'_, Desktop>, request: AiRequest) -> Rpc<AiPreview> {
+    let desktop = state.inner().clone();
+    let session = rpc(desktop.session(request.session_id))?;
+    let token = CancellationToken::default();
+    let (options, selected, config, epoch, id) = rpc((|| {
+        let mut s = desktop.lock()?;
+        if s.busy.is_some() || s.elevation_pending {
+            bail!("请等待当前任务完成");
+        }
+        let (options, selected) = ai_options(&s, &request)?;
+        s.next_ai_preview += 1;
+        s.ai_preview = None;
+        if let Some(old) = s.preview_cancel.replace(token.clone()) {
+            old.cancel();
+        }
+        Ok((
+            options,
+            selected,
+            s.config.clone(),
+            s.epoch,
+            s.next_ai_preview,
+        ))
+    })())?;
+    rpc(
+        tauri::async_runtime::spawn_blocking(move || -> Result<AiPreview> {
+            let ctx = ExecutionContext::new(token, |_| {});
+            let prepared = AnalysisService::prepare_ai_with_config(
+                &session,
+                &options,
+                selected.as_ref(),
+                &config,
+                &ctx,
+            )?;
+            let preview = AiPreview {
+                id,
+                session_id: session.id(),
+                plan: prepared.plan().clone(),
+            };
+            let mut s = desktop.lock()?;
+            if s.next_ai_preview != id
+                || s.epoch != epoch
+                || s.config != config
+                || s.busy.is_some()
+                || s.session.as_ref().map(AnalysisSession::id) != Some(request.session_id)
+                || (request.scope == "matches" && request.selection_id != Some(s.selection_info.id))
+            {
+                bail!("发送预览已过期，请重新计算");
+            }
+            s.preview_cancel = None;
+            s.ai_preview = Some(FrozenAi {
+                id,
+                request,
+                config,
+                epoch,
+                prepared,
+            });
+            Ok(preview)
+        })
+        .await
+        .map_err(|e| e.to_string())?,
+    )
+}
+
+fn take_ai_plan(s: &mut Inner, request: &AiRequest) -> Result<PreparedAiAnalysis> {
+    let plan = s
+        .ai_preview
+        .as_ref()
+        .ok_or_else(|| anyhow!("请先完成发送预览"))?;
+    if request.plan_id != Some(plan.id)
+        || plan.epoch != s.epoch
+        || plan.config != s.config
+        || plan.request.session_id != request.session_id
+        || plan.request.scope != request.scope
+        || plan.request.selection_id != request.selection_id
+        || plan.request.include_payload != request.include_payload
+        || s.session.as_ref().map(AnalysisSession::id) != Some(request.session_id)
+        || (request.scope == "matches" && request.selection_id != Some(s.selection_info.id))
+    {
+        bail!("发送范围或设置已变化，请重新计算预览");
+    }
+    Ok(s.ai_preview.take().unwrap().prepared)
+}
+
 #[tauri::command]
 pub async fn start_ai(
     app: AppHandle,
@@ -730,59 +904,25 @@ pub async fn start_ai(
 ) -> Rpc<TaskMessage> {
     rpc((|| {
         let desktop = state.inner().clone();
-        let session = desktop.session(request.session_id)?;
-        let s = desktop.lock()?;
-        if !s.config_loaded {
-            bail!("请先加载或保存配置");
+        let mut s = desktop.lock()?;
+        if s.busy.is_some() || s.elevation_pending {
+            bail!("请等待当前任务完成");
         }
-        let scope = match request.scope.as_str() {
-            "all" => AiScope::All,
-            "matches" => AiScope::Matches,
-            "suspicious" => AiScope::Suspicious,
-            _ => bail!("无效的 AI 范围"),
-        };
-        let selected = if scope == AiScope::Matches {
-            if request.selection_id != Some(s.selection_info.id) {
-                bail!("筛选范围已变化，请确认最新有效筛选");
-            }
-            Some(s.selection.clone().ok_or_else(|| anyhow!("尚无有效筛选"))?)
-        } else {
-            None
-        };
-        if selected.as_ref().is_some_and(RecordSelection::is_empty) {
-            bail!("AI 范围为空");
-        }
-        let config = s.config.clone();
-        if s.args.qa_ai
-            && !(config.base_url.starts_with("http://127.0.0.1:")
-                || config.base_url.starts_with("http://[::1]:"))
-        {
-            bail!("验收 AI 仅允许本机回环模拟服务");
-        }
-        let options = AiOptions {
-            config_path: s.prefs.config_path.clone().into(),
-            scope,
-            include_payload: request.include_payload,
-        };
+        ai_options(&s, &request)?;
+        let prepared = take_ai_plan(&mut s, &request)?;
         drop(s);
-        start_job(app, desktop, "ai", "AI 分析", move |ctx| {
-            let query = QueryOptions {
-                suspicious: scope == AiScope::Suspicious,
-                ..Default::default()
-            };
-            if scope != AiScope::Matches && session.query(&query, ctx)?.is_empty() {
-                bail!("AI 范围为空");
-            }
-            Ok(WorkerResult::Outcome(
-                AnalysisService::analyze_ai_with_config(
-                    &session,
-                    &options,
-                    selected.as_ref(),
-                    &config,
-                    ctx,
-                )?,
-            ))
-        })
+        start_session_job(
+            app,
+            desktop,
+            "ai",
+            "AI 分析",
+            Some(request.session_id),
+            move |ctx| {
+                Ok(WorkerResult::Outcome(AnalysisService::analyze_prepared_ai(
+                    prepared, ctx,
+                )?))
+            },
+        )
     })())
 }
 #[tauri::command]

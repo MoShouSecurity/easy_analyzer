@@ -9,19 +9,22 @@ import {
 import { api } from "../lib/api";
 import { number } from "../lib/utils";
 import { Button } from "./ui/button";
+import { AiLocalSummary } from "./AiLocalSummary";
 import type { RunSummary, AiBatch, Page } from "../types";
 export function AiHistory({
   runs,
   sessionId,
   onOffset,
   onError,
+  initiallyOpen = false,
 }: {
+  initiallyOpen?: boolean;
   runs: Page<RunSummary> | undefined;
   sessionId: number;
   onOffset: (v: number) => void;
   onError: (s: string) => void;
 }) {
-  const [open, setOpen] = useState(false),
+  const [open, setOpen] = useState(initiallyOpen),
     [expanded, setExpanded] = useState<number | null>(null),
     [batches, setBatches] = useState<Page<AiBatch> | null>(null),
     [loading, setLoading] = useState(false);
@@ -78,6 +81,9 @@ export function AiHistory({
               </button>
               {expanded === run.index && (
                 <div className="batch-list">
+                  {run.local_summary && (
+                    <AiLocalSummary text={run.local_summary} />
+                  )}
                   {loading ? (
                     <LoaderCircle className="spin" size={15} />
                   ) : (

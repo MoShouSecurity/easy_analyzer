@@ -37,6 +37,22 @@ fn publish(
     Ok(view)
 }
 #[test]
+fn ai_page_excludes_local_findings_without_removing_them_from_session() {
+    let session = load(&["auth.log"]);
+    let ctx = ExecutionContext::default();
+    let (overview, _) = build_view(&session, &request(&session, Screen::Overview), &ctx).unwrap();
+    assert!(overview.findings.unwrap().total > 0);
+    let mut ai = request(&session, Screen::Ai);
+    // Even an old frontend's explicit local/all filter cannot mix local results into AI pages.
+    for origin in ["all", "local", "ai"] {
+        ai.filters.origin = origin.into();
+        let (view, _) = build_view(&session, &ai, &ctx).unwrap();
+        assert_eq!(view.findings.unwrap().total, 0);
+    }
+    let (overview, _) = build_view(&session, &request(&session, Screen::Overview), &ctx).unwrap();
+    assert!(overview.findings.unwrap().total > 0);
+}
+#[test]
 fn page_does_not_limit_ai_selection_and_bad_query_keeps_valid_scope() {
     let text = (0..175)
         .map(|i| format!("record {i} needle\n"))
@@ -174,6 +190,7 @@ fn config_transport_redacts_keys_and_explicit_actions_preserve_or_clear() {
         api_key_env: String::new(),
         timeout_seconds: original.timeout_seconds,
         batch_bytes: original.batch_bytes,
+        context_tokens: original.context_tokens,
         max_output_tokens: original.max_output_tokens,
         response_format: original.response_format.clone(),
         token_parameter: original.token_parameter.clone(),
@@ -207,4 +224,66 @@ fn config_transport_redacts_keys_and_explicit_actions_preserve_or_clear() {
             .unwrap()
             .contains("sk-accidentally")
     );
+}
+
+#[test]
+fn ai_preview_rejects_changed_settings_payload_selection_or_session() {
+    let session = load(&["auth.log"]);
+    let desktop = Desktop::new(PathBuf::new(), Args::default());
+    let mut state = desktop.lock().unwrap();
+    state.session = Some(session.clone());
+    state.config_loaded = true;
+    let request = AiRequest {
+        session_id: session.id(),
+        scope: "all".into(),
+        selection_id: None,
+        include_payload: false,
+        plan_id: Some(9),
+    };
+    let prepared = AnalysisService::prepare_ai_with_config(
+        &session,
+        &AiOptions {
+            config_path: "unused".into(),
+            scope: AiScope::All,
+            include_payload: false,
+        },
+        None,
+        &state.config,
+        &ExecutionContext::default(),
+    )
+    .unwrap();
+    state.ai_preview = Some(FrozenAi {
+        id: 9,
+        request: request.clone(),
+        config: state.config.clone(),
+        epoch: state.epoch,
+        prepared,
+    });
+    let mut changed = request.clone();
+    changed.include_payload = true;
+    assert!(take_ai_plan(&mut state, &changed).is_err());
+    changed = request.clone();
+    changed.plan_id = Some(8);
+    assert!(take_ai_plan(&mut state, &changed).is_err());
+    changed = request.clone();
+    changed.session_id += 1;
+    assert!(take_ai_plan(&mut state, &changed).is_err());
+    changed = request.clone();
+    changed.scope = "matches".into();
+    changed.selection_id = Some(123);
+    assert!(take_ai_plan(&mut state, &changed).is_err());
+    state.config.model = "changed".into();
+    assert!(take_ai_plan(&mut state, &request).is_err());
+    state.config.model = state.ai_preview.as_ref().unwrap().config.model.clone();
+    state.epoch += 1;
+    assert!(take_ai_plan(&mut state, &request).is_err());
+    state.epoch -= 1;
+    assert_eq!(
+        take_ai_plan(&mut state, &request)
+            .unwrap()
+            .plan()
+            .selected_records,
+        session.page(None, 0, 100).unwrap().total
+    );
+    assert!(take_ai_plan(&mut state, &request).is_err());
 }

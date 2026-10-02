@@ -24,6 +24,7 @@ export interface PublicConfig {
   api_key_env: string;
   timeout_seconds: number;
   batch_bytes: number;
+  context_tokens: number | null;
   max_output_tokens: number;
   response_format: string;
   token_parameter: string;
@@ -216,6 +217,7 @@ export interface RunSummary {
   analyzed: number;
   selected: number;
   include_payload: boolean;
+  local_summary: string | null;
 }
 export interface AiBatch {
   index: number;
@@ -300,3 +302,17 @@ export const titles: Record<Screen, string> = {
 };
 export const evidenceScreen = (s: Screen) =>
   ["logs", "processes", "network"].includes(s);
+
+export interface AiPreview {
+  id: number;
+  session_id: number;
+  plan: {
+    selected_records: number;
+    evidence_tokens: number;
+    prompt_tokens: number;
+    input_budget_tokens: number | null;
+    context_tokens: number | null;
+    evidence_batches: number;
+    summary_planned: boolean;
+  };
+}

@@ -163,6 +163,7 @@ pub struct PublicConfig {
     pub api_key_env: String,
     pub timeout_seconds: u64,
     pub batch_bytes: usize,
+    pub context_tokens: Option<usize>,
     pub max_output_tokens: u32,
     pub response_format: String,
     pub token_parameter: String,
@@ -184,6 +185,7 @@ impl From<&core::ai::AiConfig> for PublicConfig {
             },
             timeout_seconds: c.timeout_seconds,
             batch_bytes: c.batch_bytes,
+            context_tokens: c.context_tokens,
             max_output_tokens: c.max_output_tokens,
             response_format: c.response_format.clone(),
             token_parameter: c.token_parameter.clone(),
@@ -197,6 +199,8 @@ pub struct ConfigInput {
     pub api_key_env: String,
     pub timeout_seconds: u64,
     pub batch_bytes: usize,
+    #[serde(default)]
+    pub context_tokens: Option<usize>,
     pub max_output_tokens: u32,
     pub response_format: String,
     pub token_parameter: String,
@@ -232,6 +236,7 @@ impl ConfigInput {
             },
             timeout_seconds: self.timeout_seconds,
             batch_bytes: self.batch_bytes,
+            context_tokens: self.context_tokens,
             max_output_tokens: self.max_output_tokens,
             response_format: self.response_format,
             token_parameter: self.token_parameter,
@@ -310,6 +315,7 @@ pub struct RunSummary {
     pub analyzed: usize,
     pub selected: usize,
     pub include_payload: bool,
+    pub local_summary: Option<String>,
 }
 #[derive(Serialize)]
 pub struct ViewResponse {
@@ -368,12 +374,20 @@ pub struct Bootstrap {
     pub qa: bool,
     pub qa_ai: bool,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct AiRequest {
     pub session_id: u64,
     pub scope: String,
     pub selection_id: Option<u64>,
     pub include_payload: bool,
+    #[serde(default)]
+    pub plan_id: Option<u64>,
+}
+#[derive(Serialize)]
+pub struct AiPreview {
+    pub id: u64,
+    pub session_id: u64,
+    pub plan: core::ai::AiPlan,
 }
 #[derive(Deserialize)]
 pub struct ExportRequest {

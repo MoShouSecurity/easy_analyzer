@@ -54,6 +54,7 @@ const boot: Bootstrap = {
     api_key_env: "",
     timeout_seconds: 10,
     batch_bytes: 8192,
+    context_tokens: null,
     max_output_tokens: 1000,
     response_format: "json_object",
     token_parameter: "max_tokens",
@@ -147,6 +148,20 @@ beforeEach(() => {
         throw "非法正则表达式";
       return response(args.request);
     }
+    if (command === "prepare_ai")
+      return {
+        id: 42,
+        session_id: 7,
+        plan: {
+          selected_records: 3,
+          evidence_tokens: 300,
+          prompt_tokens: 100,
+          input_budget_tokens: null,
+          context_tokens: null,
+          evidence_batches: 1,
+          summary_planned: false,
+        },
+      };
     if (command === "start_ai")
       return {
         task_id: 99,
@@ -166,6 +181,104 @@ beforeEach(() => {
   });
 });
 afterEach(cleanup);
+it("shows the local recap after partial AI failure as escaped text without sending again", async () => {
+  const original = mock.invoke.getMockImplementation()!;
+  const recap =
+    "本地结果整理（不是新的 AI 关联推理）\n成功 2/3，失败证据批次：2\n<script>unsafe()</script>\n证据：evidence-one";
+  mock.invoke.mockImplementation((command, args) => {
+    if (command === "get_view") {
+      const view = response(args.request);
+      view.runs = {
+        total: 1,
+        offset: 0,
+        items: [
+          {
+            index: 0,
+            model: "synthetic-model",
+            endpoint: "http://127.0.0.1:9999",
+            batches: 4,
+            completed: 3,
+            analyzed: 100,
+            selected: 150,
+            include_payload: false,
+            local_summary: recap,
+          },
+        ],
+      };
+      return Promise.resolve(view);
+    }
+    return original(command, args);
+  });
+  const { container } = render(<App />);
+  await waitFor(() => expect(mock.window.onCloseRequested).toHaveBeenCalled());
+  fireEvent.click(screen.getAllByRole("button", { name: "AI 分析" })[1]);
+  await screen.findByText("本地结果整理 · 部分完成");
+  expect(container.querySelector(".local-ai-summary pre")?.textContent).toBe(
+    recap,
+  );
+  expect(container.querySelector(".local-ai-summary script")).toBeNull();
+  expect(mock.invoke.mock.calls.some(([c]) => c === "start_ai")).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: /运行历史/ }));
+  fireEvent.click(screen.getByRole("button", { name: /#1\s*synthetic-model/ }));
+  await waitFor(() =>
+    expect(document.querySelectorAll(".local-ai-summary")).toHaveLength(2),
+  );
+});
+describe("AI batch progress", () => {
+  it("shows current/total batches and resets the count for each summary round", async () => {
+    const task = {
+      task_id: 99,
+      session_id: 7,
+      epoch: 0,
+      revision: 1,
+      kind: "ai",
+      status: "running",
+      label: "AI 分析",
+      stage: "AI 批次",
+      completed: 1,
+      total: 7,
+      error: null,
+      saved_paths: [],
+    };
+    const invoke = mock.invoke.getMockImplementation()!;
+    mock.invoke.mockImplementation((command, args) =>
+      command === "initialize"
+        ? Promise.resolve({ ...boot, busy: task })
+        : invoke(command, args),
+    );
+    const { container } = render(<App />);
+    await screen.findByText("AI 批次 · 1 / 7");
+    const listener = mock.event.mock.calls.find(
+      ([name]) => name === "analysis-task",
+    )![1];
+    await act(async () => listener({ payload: { ...task, completed: 7 } }));
+    await screen.findByText("AI 批次 · 7 / 7");
+    // The last batch is still awaiting its response, not 100% complete.
+    expect(container.querySelector(".statusbar .progress-track")).toBeNull();
+    await act(async () =>
+      listener({
+        payload: {
+          ...task,
+          stage: "跨批汇总（第 1 轮）",
+          completed: 1,
+          total: 3,
+        },
+      }),
+    );
+    await screen.findByText("跨批汇总（第 1 轮） · 1 / 3");
+    await act(async () =>
+      listener({
+        payload: {
+          ...task,
+          stage: "跨批汇总（第 2 轮）",
+          completed: 1,
+          total: 1,
+        },
+      }),
+    );
+    await screen.findByText("跨批汇总（第 2 轮） · 1 / 1");
+  });
+});
 describe("window closing", () => {
   function desktopClose() {
     const invoke = mock.invoke.getMockImplementation()!;
@@ -495,6 +608,7 @@ it("AI starts only explicitly and raw payload is opt-in", async () => {
   fireEvent.click(screen.getAllByRole("button", { name: "AI 分析" })[1]);
   await screen.findByText("synthetic-model");
   const button = screen.getByRole("button", { name: "运行 AI 分析" });
+  await waitFor(() => expect(button).toBeEnabled());
   fireEvent.click(button);
   await waitFor(() =>
     expect(mock.invoke).toHaveBeenCalledWith("start_ai", {
@@ -503,9 +617,114 @@ it("AI starts only explicitly and raw payload is opt-in", async () => {
         scope: "suspicious",
         selection_id: null,
         include_payload: false,
+        plan_id: 42,
       },
     }),
   );
+});
+it("failed local planning blocks sending and offers a retry", async () => {
+  const original = mock.invoke.getMockImplementation()!;
+  mock.invoke.mockImplementation((c, args) =>
+    c === "prepare_ai" ? Promise.reject("上下文预算不足") : original(c, args),
+  );
+  render(<App />);
+  await waitFor(() => expect(mock.window.onCloseRequested).toHaveBeenCalled());
+  fireEvent.click(screen.getAllByRole("button", { name: "AI 分析" })[1]);
+  await screen.findByText("预览失败：上下文预算不足");
+  expect(screen.getByRole("button", { name: "运行 AI 分析" })).toBeDisabled();
+  expect(mock.invoke.mock.calls.some(([c]) => c === "start_ai")).toBe(false);
+  mock.invoke.mockImplementation(original);
+  fireEvent.click(screen.getByRole("button", { name: "重新计算" }));
+  await screen.findByText("单次完整发送 · 字节兼容模式");
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "运行 AI 分析" })).toBeEnabled(),
+  );
+});
+it("ignores stale previews and only sends the latest explicitly selected payload plan", async () => {
+  const original = mock.invoke.getMockImplementation()!;
+  const pending: { args: any; resolve: (v: any) => void }[] = [];
+  mock.invoke.mockImplementation((c, args) =>
+    c === "prepare_ai"
+      ? new Promise((resolve) => pending.push({ args, resolve }))
+      : original(c, args),
+  );
+  render(<App />);
+  await waitFor(() => expect(mock.window.onCloseRequested).toHaveBeenCalled());
+  fireEvent.click(screen.getAllByRole("button", { name: "AI 分析" })[1]);
+  await waitFor(() => expect(pending).toHaveLength(1));
+  fireEvent.click(
+    screen.getByRole("checkbox", { name: "本次包含原始包与载荷" }),
+  );
+  await waitFor(() => expect(pending).toHaveLength(2));
+  const preview = {
+    id: 83,
+    session_id: 7,
+    plan: {
+      selected_records: 3,
+      evidence_tokens: 400,
+      prompt_tokens: 100,
+      input_budget_tokens: 700000,
+      context_tokens: 1000000,
+      evidence_batches: 2,
+      summary_planned: true,
+    },
+  };
+  await act(async () => pending[1].resolve(preview));
+  await screen.findByText(/分为 2 个证据批次/);
+  await act(async () =>
+    pending[0].resolve({
+      ...preview,
+      id: 82,
+      plan: { ...preview.plan, evidence_batches: 1 },
+    }),
+  );
+  expect(screen.queryByText(/单次完整发送/)).not.toBeInTheDocument();
+  expect(mock.invoke.mock.calls.some(([c]) => c === "start_ai")).toBe(false);
+  expect(pending[1].args.request.include_payload).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "运行 AI 分析" }));
+  await waitFor(() =>
+    expect(mock.invoke).toHaveBeenCalledWith("start_ai", {
+      request: {
+        session_id: 7,
+        scope: "suspicious",
+        selection_id: null,
+        include_payload: true,
+        plan_id: 83,
+      },
+    }),
+  );
+});
+it("localizes nested Windows attributes while preserving their keys and values", () => {
+  const key = "Event.System.Execution.#attributes.ThreadID";
+  const detail: DetailResponse = {
+    session_id: 7,
+    record: {
+      ...record,
+      raw: `${key}=0042`,
+      data: {
+        kind: "log",
+        fields: { category: "windows_event", fields: { [key]: "0042" } },
+      },
+    },
+    source: null,
+    related: [],
+  };
+  render(
+    <Inspector
+      detail={detail}
+      finding={null}
+      loading={false}
+      onJump={() => {}}
+      onFinding={() => {}}
+      onClose={() => {}}
+    />,
+  );
+  expect(screen.getByText("执行线程 ID")).toHaveAttribute("title", key);
+  expect(screen.getByText("0042")).toBeInTheDocument();
+  expect(detail.record.raw).toBe(`${key}=0042`);
+  expect(detail.record.data).toMatchObject({
+    fields: { fields: { [key]: "0042" } },
+  });
 });
 it("raw evidence is displayed as text and cannot render HTML", async () => {
   const detail: DetailResponse = {
@@ -572,7 +791,9 @@ it("current-filter AI sends the full selection token and resets payload after ea
   fireEvent.click(
     screen.getByRole("checkbox", { name: "本次包含原始包与载荷" }),
   );
-  fireEvent.click(screen.getByRole("button", { name: "运行 AI 分析" }));
+  const runButton = screen.getByRole("button", { name: "运行 AI 分析" });
+  await waitFor(() => expect(runButton).toBeEnabled());
+  fireEvent.click(runButton);
   await waitFor(() =>
     expect(mock.invoke).toHaveBeenCalledWith("start_ai", {
       request: {
@@ -580,6 +801,7 @@ it("current-filter AI sends the full selection token and resets payload after ea
         scope: "matches",
         selection_id: 11,
         include_payload: true,
+        plan_id: 42,
       },
     }),
   );
@@ -671,4 +893,125 @@ it("source details preserve full paths and hashes despite compact table labels",
   expect(screen.getByText("中文.log")).toBeInTheDocument();
   expect(screen.getByText(source.path)).toBeInTheDocument();
   expect(screen.getByText(source.sha256)).toBeInTheDocument();
+});
+
+it("AI edits a full evidence selection locally and sends the new selection only explicitly", async () => {
+  const original = mock.invoke.getMockImplementation()!;
+  let selected = { id: 22, count: 250, label: "日志 · 关键词：合成组甲" };
+  mock.invoke.mockImplementation((c, args) => {
+    if (c === "initialize")
+      return { ...boot, selection: { id: null, count: 0, label: "" } };
+    if (
+      c === "get_view" &&
+      args.request.screen === "logs" &&
+      args.request.filters.text === "合成组甲"
+    )
+      return {
+        ...response(args.request),
+        selection: selected,
+        records: { items: [record], total: 250, offset: 0 },
+      };
+    if (c === "get_view" && args.request.screen === "ai")
+      return { ...response(args.request), selection: selected };
+    return original(c, args);
+  });
+  render(<App />);
+  await waitFor(() => expect(mock.window.onCloseRequested).toHaveBeenCalled());
+  fireEvent.click(screen.getAllByRole("button", { name: "AI 分析" })[1]);
+  fireEvent.click(await screen.findByRole("button", { name: "编辑筛选" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "发送证据查询" }), {
+    target: { value: "合成组甲" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "应用筛选" }));
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+  );
+  expect(mock.invoke).toHaveBeenCalledWith("get_view", {
+    request: expect.objectContaining({
+      screen: "logs",
+      commit_selection: true,
+      focus_id: null,
+      filters: expect.objectContaining({
+        text: "合成组甲",
+        offset: 0,
+        limit: 100,
+      }),
+    }),
+  });
+  expect(mock.invoke.mock.calls.some(([c]) => c === "start_ai")).toBe(false);
+  expect(
+    screen.queryByRole("combobox", { name: "发现来源" }),
+  ).not.toBeInTheDocument();
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "运行 AI 分析" })).toBeEnabled(),
+  );
+  expect(screen.getByText("日志 · 关键词：合成组甲")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "运行 AI 分析" }));
+  await waitFor(() =>
+    expect(mock.invoke).toHaveBeenCalledWith("start_ai", {
+      request: expect.objectContaining({
+        scope: "matches",
+        selection_id: 22,
+        include_payload: false,
+      }),
+    }),
+  );
+});
+
+it("AI current selection has an editor even when no previous evidence selection exists", async () => {
+  const original = mock.invoke.getMockImplementation()!;
+  mock.invoke.mockImplementation((c, args) => {
+    if (c === "initialize")
+      return { ...boot, selection: { id: null, count: 0, label: "" } };
+    if (c === "get_view")
+      return {
+        ...response(args.request),
+        selection: { id: null, count: 0, label: "" },
+      };
+    return original(c, args);
+  });
+  render(<App />);
+  await waitFor(() => expect(mock.window.onCloseRequested).toHaveBeenCalled());
+  fireEvent.click(screen.getAllByRole("button", { name: "AI 分析" })[1]);
+  fireEvent.click(await screen.findByRole("button", { name: "当前筛选" }));
+  expect(
+    screen.getByRole("dialog", { name: "筛选发送证据" }),
+  ).toBeInTheDocument();
+  expect(mock.invoke.mock.calls.some(([c]) => c === "start_ai")).toBe(false);
+});
+
+it("invalid AI filter keeps the previous selection and Chinese composition does not submit", async () => {
+  render(<App />);
+  await waitFor(() => expect(mock.window.onCloseRequested).toHaveBeenCalled());
+  fireEvent.click(screen.getAllByRole("button", { name: "AI 分析" })[1]);
+  fireEvent.click(await screen.findByRole("button", { name: "当前筛选" }));
+  fireEvent.click(screen.getByRole("button", { name: "编辑筛选" }));
+  const input = screen.getByRole("textbox", { name: "发送证据查询" });
+  fireEvent.change(input, { target: { value: "[" } });
+  fireEvent.click(screen.getByRole("checkbox", { name: "正则表达式" }));
+  const before = mock.invoke.mock.calls.length;
+  fireEvent.compositionStart(input);
+  expect(
+    fireEvent.keyDown(input, { key: "Enter", keyCode: 229, isComposing: true }),
+  ).toBe(false);
+  fireEvent.submit(input.closest("form")!);
+  expect(mock.invoke.mock.calls.length).toBe(before);
+  fireEvent.compositionEnd(input);
+  fireEvent.click(screen.getByRole("button", { name: "应用筛选" }));
+  await screen.findByRole("alert");
+  expect(screen.getByRole("alert")).toHaveTextContent("保留上一次有效筛选");
+  fireEvent.click(screen.getByRole("button", { name: "取消" }));
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+  );
+  expect(screen.getByText("日志 · 完整筛选")).toBeInTheDocument();
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "运行 AI 分析" })).toBeEnabled(),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "运行 AI 分析" }));
+  await waitFor(() =>
+    expect(mock.invoke).toHaveBeenCalledWith("start_ai", {
+      request: expect.objectContaining({ scope: "matches", selection_id: 11 }),
+    }),
+  );
 });

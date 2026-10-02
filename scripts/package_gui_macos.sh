@@ -15,7 +15,7 @@ gui_bundle="$gui_stage/Easy Analyzer.app"
 mkdir -p "$gui_bundle/Contents/MacOS" "$gui_bundle/Contents/Resources"
 cp target/aarch64-apple-darwin/release/easy-analyzer-gui "$gui_bundle/Contents/MacOS/easy-analyzer-gui"
 cp crates/analyzer-gui/assets/OFL.txt "$gui_bundle/Contents/Resources/OFL.txt"
-cp crates/analyzer-gui/icons/icon.icns "$gui_bundle/Contents/Resources/icon.icns"
+cp crates/analyzer-gui/icons/easy-family/icon.icns "$gui_bundle/Contents/Resources/icon.icns"
 cp LICENSE "$gui_bundle/Contents/Resources/LICENSE"
 cat > "$gui_bundle/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

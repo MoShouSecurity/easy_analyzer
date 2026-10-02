@@ -11,6 +11,7 @@ import type {
   Preferences,
   AiBatch,
   Page,
+  AiPreview,
 } from "../types";
 export const api = {
   initialize: () => invoke<Bootstrap>("initialize"),
@@ -29,11 +30,26 @@ export const api = {
     invoke<PublicConfig>("apply_config", { config }),
   config: (operation: string, path: string) =>
     invoke<TaskMessage>("config_operation", { operation, path }),
+  previewAi: (
+    sessionId: number,
+    scope: string,
+    selectionId: number | null,
+    includePayload: boolean,
+  ) =>
+    invoke<AiPreview>("prepare_ai", {
+      request: {
+        session_id: sessionId,
+        scope,
+        selection_id: selectionId,
+        include_payload: includePayload,
+      },
+    }),
   ai: (
     sessionId: number,
     scope: string,
     selectionId: number | null,
     includePayload: boolean,
+    planId: number,
   ) =>
     invoke<TaskMessage>("start_ai", {
       request: {
@@ -41,6 +57,7 @@ export const api = {
         scope,
         selection_id: selectionId,
         include_payload: includePayload,
+        plan_id: planId,
       },
     }),
   export: (

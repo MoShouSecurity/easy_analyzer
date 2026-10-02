@@ -36,6 +36,8 @@ import {
   Square,
   Keyboard,
   FolderOpen,
+  SlidersHorizontal,
+  History,
 } from "lucide-react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { api } from "./lib/api";
@@ -57,6 +59,7 @@ import {
   type Flow,
   type Source,
   type ConfigInput,
+  type AiPreview,
   type Preferences,
   type ImportRequest,
   type TaskMessage,
@@ -74,6 +77,8 @@ import { Inspector, SourceInspector, Risk } from "./components/Inspector";
 import { ImportView } from "./components/ImportView";
 import { SettingsView } from "./components/SettingsView";
 import { AiHistory } from "./components/AiHistory";
+import { AiLocalSummary } from "./components/AiLocalSummary";
+import { AiEvidenceFilter } from "./components/AiEvidenceFilter";
 const icons = {
   import: Upload,
   overview: LayoutDashboard,
@@ -166,6 +171,19 @@ export function App() {
     [request, setRequest] = useState(initialImport),
     [dragging, setDragging] = useState(false),
     [elevationBusy, setElevationBusy] = useState(false),
+    [aiSending, setAiSending] = useState(false),
+    [aiFilter, setAiFilter] = useState<ScopeContext | null>(null),
+    [aiFilterBusy, setAiFilterBusy] = useState(false),
+    [aiHistoryOpen, setAiHistoryOpen] = useState(false),
+    [aiPreview, setAiPreview] = useState<{
+      key: string;
+      value: AiPreview;
+    } | null>(null),
+    [aiPreviewError, setAiPreviewError] = useState<{
+      key: string;
+      message: string;
+    } | null>(null),
+    [aiPreviewAttempt, setAiPreviewAttempt] = useState(0),
     [scope, setScope] = useState("suspicious"),
     [payload, setPayload] = useState(false),
     [exportOpen, setExportOpen] = useState(false),
@@ -214,7 +232,7 @@ export function App() {
     overview = data?.overview || lastView?.overview,
     active = filters[screen],
     hasSession = boot?.session_id !== null && !!boot,
-    busy = !!task || elevationBusy,
+    busy = !!task || elevationBusy || aiSending || aiFilterBusy,
     narrow = width < 1200,
     compact = width < 1024;
   const refresh = useCallback(
@@ -363,8 +381,14 @@ export function App() {
             fresh.session_id !== null
           ) {
             qaAiStarted.current = true;
+            const preview = await api.previewAi(
+              fresh.session_id!,
+              "suspicious",
+              null,
+              false,
+            );
             await launch(() =>
-              api.ai(fresh.session_id!, "suspicious", null, false),
+              api.ai(fresh.session_id!, "suspicious", null, false, preview.id),
             );
           }
           if (value.error) setError(value.error);
@@ -462,6 +486,69 @@ export function App() {
     setFilters((v) => ({ ...v, [screen]: updated }));
     setFocus(null);
     void refresh(screen, updated, null, true);
+  };
+  const editAiFilter = () => {
+    if (!hasSession || busy) return;
+    const saved = scopeContext.current;
+    setAiFilter(
+      saved
+        ? structuredClone(saved)
+        : {
+            screen: overview?.logs
+              ? "logs"
+              : overview?.processes
+                ? "processes"
+                : overview?.packets
+                  ? "network"
+                  : "logs",
+            filters: defaultFilters(),
+          },
+    );
+  };
+  const applyAiFilter = async (draft: ScopeContext) => {
+    if (busy || session.current === null) return;
+    const sid = session.current;
+    const revision = ++viewRevision.current;
+    const filter = {
+      ...draft.filters,
+      offset: 0,
+      tree: false,
+      packets: true,
+      collapsed: [],
+    };
+    setAiFilterBusy(true);
+    try {
+      const value = await api.view({
+        session_id: sid,
+        revision,
+        screen: draft.screen,
+        filters: filter,
+        focus_id: null,
+        commit_selection: true,
+        source_offset: sourceOffset,
+        diagnostic_offset: diagnosticOffset,
+        run_offset: runOffset,
+      });
+      if (
+        revision !== viewRevision.current ||
+        value.session_id !== session.current
+      )
+        throw new Error("会话或视图已更新，请重新应用筛选");
+      scopeContext.current = {
+        screen: draft.screen,
+        filters: structuredClone(filter),
+      };
+      setFilters((v) => ({ ...v, [draft.screen]: filter }));
+      setViews((v) => ({ ...v, [draft.screen]: value }));
+      setLastView(value);
+      setSelection(value.selection);
+      setScope("matches");
+      setAiFilter(null);
+      setError(null);
+      await refresh("ai", currentFilters.current.ai, null, false);
+    } finally {
+      setAiFilterBusy(false);
+    }
   };
   const requestElevation = async () => {
     if (busy || boot?.platform !== "windows") return;
@@ -619,20 +706,75 @@ export function App() {
       setError(String(e));
     }
   };
-  const startAI = async () => {
-    const sid = session.current;
-    if (sid === null) return;
-    const includePayload = payload;
-    setPayload(false);
-    await launch(() =>
-      api.ai(
-        sid,
+  const aiCount =
+    scope === "matches"
+      ? selection.count
+      : scope === "all"
+        ? overview?.records || 0
+        : overview?.suspicious || 0;
+  const aiPlanKey = JSON.stringify([
+    boot?.session_id,
+    scope,
+    scope === "matches" ? selection.id : null,
+    payload,
+    boot?.config,
+  ]);
+  const currentAiPreview =
+    aiPreview?.key === aiPlanKey ? aiPreview.value : null;
+  const currentAiPreviewError =
+    aiPreviewError?.key === aiPlanKey ? aiPreviewError.message : null;
+  useEffect(() => {
+    if (
+      screen !== "ai" ||
+      busy ||
+      !boot?.config_loaded ||
+      boot.session_id === null ||
+      !aiCount
+    )
+      return;
+    let disposed = false;
+    setAiPreview(null);
+    setAiPreviewError(null);
+    void api
+      .previewAi(
+        boot.session_id,
         scope,
         scope === "matches" ? selection.id : null,
-        includePayload,
-      ),
-    );
+        payload,
+      )
+      .then((value) => {
+        if (!disposed) setAiPreview({ key: aiPlanKey, value });
+      })
+      .catch((e) => {
+        if (!disposed)
+          setAiPreviewError({ key: aiPlanKey, message: String(e) });
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [screen, busy, boot?.config_loaded, aiPlanKey, aiCount, aiPreviewAttempt]);
+  const startAI = async () => {
+    const sid = session.current;
+    if (sid === null || !currentAiPreview || busy) return;
+    const includePayload = payload;
+    setAiSending(true);
+    try {
+      await launch(() =>
+        api.ai(
+          sid,
+          scope,
+          scope === "matches" ? selection.id : null,
+          includePayload,
+          currentAiPreview.id,
+        ),
+      );
+    } finally {
+      setPayload(false);
+      setAiSending(false);
+      setAiPreview(null);
+    }
   };
+
   const reset = async () => {
     lifecycle.current++;
     try {
@@ -982,16 +1124,18 @@ export function App() {
           })),
         ]}
       />
-      <Select
-        label="发现来源"
-        value={active.origin}
-        onChange={(v) => changeFilters({ origin: v || "all" })}
-        options={[
-          { value: "all", label: "全部发现" },
-          { value: "local", label: "本地规则" },
-          { value: "ai", label: "AI 发现" },
-        ]}
-      />
+      {screen !== "ai" && (
+        <Select
+          label="发现来源"
+          value={active.origin}
+          onChange={(v) => changeFilters({ origin: v || "all" })}
+          options={[
+            { value: "all", label: "全部发现" },
+            { value: "local", label: "本地规则" },
+            { value: "ai", label: "AI 发现" },
+          ]}
+        />
+      )}
       <span className="filter-count">
         {number(data?.findings?.total || 0)} 项发现
       </span>
@@ -1000,12 +1144,22 @@ export function App() {
   const findingsTable = (
     <DataTable
       page={data?.findings || null}
-      columns={findingsColumns}
+      columns={
+        screen === "ai"
+          ? findingsColumns.filter((c) => c.id !== "origin")
+          : findingsColumns
+      }
       id={(v) => v.id}
       selected={finding?.id}
       onSelect={selectFinding}
       loading={loading}
-      empty={hasSession ? "当前筛选没有发现" : "导入证据后展示分析结果"}
+      empty={
+        hasSession
+          ? screen === "ai"
+            ? "当前风险筛选下没有 AI 发现；可选择证据并运行 AI 分析"
+            : "当前筛选没有发现"
+          : "导入证据后展示分析结果"
+      }
       limit={active.limit}
       onPage={(offset) => changeFilters({ offset }, false)}
       onSize={(limit) => changeFilters({ limit })}
@@ -1028,12 +1182,7 @@ export function App() {
         onClose={closeInspector}
       />
     );
-  const aiCount =
-    scope === "matches"
-      ? selection.count
-      : scope === "all"
-        ? overview?.records || 0
-        : overview?.suspicious || 0;
+
   return (
     <TooltipProvider>
       <div
@@ -1054,11 +1203,12 @@ export function App() {
           }}
         >
           <div className="brand">
-            <span className="brand-mark">
-              <i />
-              <i />
-              <i />
-            </span>
+            <img
+              className="brand-mark"
+              src="/easy-analyzer.svg"
+              alt=""
+              aria-hidden="true"
+            />
             <strong>Analyzer</strong>
           </div>
           <div className="toolbar-session">
@@ -1264,7 +1414,9 @@ export function App() {
                 </button>
               </div>
             )}
-            <div className="page-body">
+            <div
+              className={`page-body ${screen === "ai" ? "ai-page-body" : ""}`}
+            >
               {screen === "import" && (
                 <ImportView
                   request={request}
@@ -1580,104 +1732,192 @@ export function App() {
               )}
               {screen === "ai" && (
                 <>
-                  <div className="ai-scope-row">
-                    <span className="section-label-text">证据范围</span>
-                    <div className="segmented">
-                      {[
-                        { value: "suspicious", label: "本地可疑项" },
-                        { value: "matches", label: "当前筛选" },
-                        { value: "all", label: "全部证据" },
-                      ].map((s) => (
-                        <button
-                          key={s.value}
-                          disabled={
-                            busy || (s.value === "matches" && !selection.id)
-                          }
-                          className={scope === s.value ? "active" : ""}
-                          onClick={() => setScope(s.value)}
-                        >
-                          {scope === s.value && <Check size={12} />} {s.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="ai-summary">
-                    <div className="ai-summary-main">
-                      <span className="ai-symbol">
-                        <Sparkles size={18} />
-                      </span>
-                      <div>
-                        <strong>
-                          {number(aiCount)} <small>条证据</small>
-                        </strong>
-                        <p title={scope === "matches" ? selection.label : ""}>
-                          {scope === "matches"
-                            ? selection.label
-                            : scope === "suspicious"
-                              ? "本地规则命中的完整证据集合"
-                              : "当前会话的全部证据"}
-                        </p>
+                  <div className="ai-controls">
+                    <div className="ai-scope-row">
+                      <span className="section-label-text">证据范围</span>
+                      <div className="segmented">
+                        {[
+                          { value: "suspicious", label: "本地可疑项" },
+                          { value: "matches", label: "当前筛选" },
+                          { value: "all", label: "全部证据" },
+                        ].map((s) => (
+                          <button
+                            key={s.value}
+                            disabled={busy || !hasSession}
+                            className={scope === s.value ? "active" : ""}
+                            onClick={() => {
+                              if (s.value === "matches" && !selection.id)
+                                editAiFilter();
+                              else setScope(s.value);
+                            }}
+                          >
+                            {scope === s.value && <Check size={12} />} {s.label}
+                          </button>
+                        ))}
                       </div>
                       <Button
-                        disabled={
-                          !hasSession ||
-                          busy ||
-                          loading ||
-                          !aiCount ||
-                          !boot?.config_loaded
-                        }
-                        onClick={() => void startAI()}
+                        variant="ghost"
+                        size="sm"
+                        disabled={!hasSession || busy}
+                        onClick={editAiFilter}
                       >
-                        <Sparkles size={14} />
-                        运行 AI 分析
+                        <SlidersHorizontal size={13} />
+                        编辑筛选
                       </Button>
                     </div>
-                    <div className="ai-service">
+                    <div className="ai-summary">
+                      <div className="ai-summary-main">
+                        <span className="ai-symbol">
+                          <Sparkles size={18} />
+                        </span>
+                        <div>
+                          <strong>
+                            {number(aiCount)} <small>条证据</small>
+                          </strong>
+                          <p title={scope === "matches" ? selection.label : ""}>
+                            {scope === "matches"
+                              ? selection.label
+                              : scope === "suspicious"
+                                ? "本地规则命中的完整证据集合"
+                                : "当前会话的全部证据"}
+                          </p>
+                        </div>
+                        <Button
+                          disabled={
+                            !hasSession ||
+                            busy ||
+                            loading ||
+                            !aiCount ||
+                            !boot?.config_loaded ||
+                            !currentAiPreview
+                          }
+                          onClick={() => void startAI()}
+                        >
+                          <Sparkles size={14} />
+                          运行 AI 分析
+                        </Button>
+                      </div>
+                      <div className="ai-service">
+                        <span>
+                          模型{" "}
+                          <strong>{boot?.config.model || "尚未配置"}</strong>
+                        </span>
+                        <span
+                          className="truncate"
+                          title={boot?.config.base_url}
+                        >
+                          服务{" "}
+                          <strong>{boot?.config.base_url || "尚未配置"}</strong>
+                        </span>
+                        <button onClick={() => navigate("settings")}>
+                          配置
+                          <ArrowUpRight size={11} />
+                        </button>
+                      </div>
+                    </div>
+                    {boot?.config_loaded && hasSession && !!aiCount && (
+                      <div className="ai-plan-preview" aria-live="polite">
+                        {currentAiPreview ? (
+                          <>
+                            <strong>发送预览</strong>
+                            <details className="ai-budget-details">
+                              <summary>预算详情</summary>
+                              <div>
+                                <span>
+                                  {number(
+                                    currentAiPreview.plan.selected_records,
+                                  )}{" "}
+                                  条 · 证据约{" "}
+                                  {number(
+                                    currentAiPreview.plan.evidence_tokens,
+                                  )}{" "}
+                                  token · 提示与预留约{" "}
+                                  {number(currentAiPreview.plan.prompt_tokens)}{" "}
+                                  token
+                                </span>
+                                <small>
+                                  本地保守估算，非服务方精确计数；不会自动发送。
+                                  {currentAiPreview.plan.context_tokens === null
+                                    ? "可在设置中启用上下文预算规划。"
+                                    : "已预留输出上限和 20% 安全余量。"}
+                                </small>
+                              </div>
+                            </details>
+                            <span>
+                              {currentAiPreview.plan.evidence_batches === 1
+                                ? "单次完整发送"
+                                : `分为 ${number(currentAiPreview.plan.evidence_batches)} 个证据批次`}
+                              {currentAiPreview.plan.summary_planned
+                                ? "，完成后跨批汇总（按需要分轮）"
+                                : ""}
+                              {currentAiPreview.plan.input_budget_tokens !==
+                              null
+                                ? ` · 每次输入预算 ${number(currentAiPreview.plan.input_budget_tokens)} token`
+                                : " · 字节兼容模式"}
+                            </span>
+                          </>
+                        ) : currentAiPreviewError ? (
+                          <>
+                            <span className="warning">
+                              预览失败：{currentAiPreviewError}
+                            </span>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              disabled={busy}
+                              onClick={() => setAiPreviewAttempt((v) => v + 1)}
+                            >
+                              重新计算
+                            </Button>
+                          </>
+                        ) : (
+                          <span>
+                            {busy
+                              ? "等待当前任务完成后更新发送预览"
+                              : "正在本地计算发送范围与预算…"}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    <div className="ai-privacy">
+                      <Checkbox
+                        label="本次包含原始包与载荷"
+                        checked={payload}
+                        disabled={busy}
+                        onChange={setPayload}
+                      />
                       <span>
-                        模型 <strong>{boot?.config.model || "尚未配置"}</strong>
+                        <CircleAlert size={12} />
+                        证据不会自动脱敏
                       </span>
-                      <span className="truncate" title={boot?.config.base_url}>
-                        服务{" "}
-                        <strong>{boot?.config.base_url || "尚未配置"}</strong>
+                    </div>
+                    {!boot?.config_loaded && (
+                      <div className="muted text-small">
+                        请先在设置页加载或保存配置。
+                      </div>
+                    )}
+                    {data?.runs.items[0]?.local_summary && (
+                      <AiLocalSummary text={data.runs.items[0].local_summary} />
+                    )}
+                  </div>
+                  <section className="ai-results" aria-label="AI 有效发现">
+                    <div className="ai-results-heading">
+                      <span title="仅展示通过回复与证据校验的 AI 结果">
+                        AI 有效发现
                       </span>
-                      <button onClick={() => navigate("settings")}>
-                        配置
-                        <ArrowUpRight size={11} />
-                      </button>
+                      {riskControls}
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={!hasSession}
+                        onClick={() => setAiHistoryOpen(true)}
+                      >
+                        <History size={13} />
+                        运行历史 {data?.runs.total || 0}
+                      </Button>
                     </div>
-                  </div>
-                  <div className="ai-privacy">
-                    <Checkbox
-                      label="本次包含原始包与载荷"
-                      checked={payload}
-                      disabled={busy}
-                      onChange={setPayload}
-                    />
-                    <span>
-                      <CircleAlert size={12} />
-                      证据不会自动脱敏
-                    </span>
-                  </div>
-                  {!boot?.config_loaded && (
-                    <div className="muted text-small">
-                      请先在设置页加载或保存配置。
-                    </div>
-                  )}
-                  {hasSession && (
-                    <AiHistory
-                      key={boot!.session_id}
-                      runs={data?.runs}
-                      sessionId={boot!.session_id!}
-                      onOffset={setRunOffset}
-                      onError={setError}
-                    />
-                  )}
-                  <div className="table-section-heading">
-                    <span>有效发现</span>
-                    <small>仅展示通过回复与证据校验的结果</small>
-                  </div>
-                  {riskControls}
-                  {findingsTable}
+                    {findingsTable}
+                  </section>
                 </>
               )}
               {screen === "reports" && (
@@ -1860,15 +2100,17 @@ export function App() {
                       : ""}
                   </span>
                 )}
-                {task.total !== null && task.total > 0 && (
-                  <span className="progress-track">
-                    <i
-                      style={{
-                        width: `${Math.min(100, ((task.completed || 0) / task.total) * 100)}%`,
-                      }}
-                    />
-                  </span>
-                )}
+                {task.kind !== "ai" &&
+                  task.total !== null &&
+                  task.total > 0 && (
+                    <span className="progress-track">
+                      <i
+                        style={{
+                          width: `${Math.min(100, ((task.completed || 0) / task.total) * 100)}%`,
+                        }}
+                      />
+                    </span>
+                  )}
                 <button onClick={() => void api.cancel(task.task_id)}>
                   取消
                 </button>
@@ -1975,6 +2217,35 @@ export function App() {
             </Button>
           </div>
         </Dialog>
+        <Dialog
+          open={aiHistoryOpen}
+          onOpenChange={setAiHistoryOpen}
+          title="AI 运行历史"
+          description="查看批次、有效回复及未完成范围。"
+          className="ai-history-dialog"
+        >
+          {hasSession && (
+            <AiHistory
+              key={boot!.session_id}
+              initiallyOpen
+              runs={data?.runs || views.ai?.runs}
+              sessionId={boot!.session_id!}
+              onOffset={setRunOffset}
+              onError={setError}
+            />
+          )}
+        </Dialog>
+        {aiFilter && (
+          <AiEvidenceFilter
+            initial={aiFilter}
+            sources={data?.sources.items || lastView?.sources.items || []}
+            categories={overview?.categories || []}
+            protocols={overview?.protocols || []}
+            busy={aiFilterBusy}
+            onApply={applyAiFilter}
+            onClose={() => setAiFilter(null)}
+          />
+        )}
         <Dialog
           open={newOpen}
           onOpenChange={setNewOpen}

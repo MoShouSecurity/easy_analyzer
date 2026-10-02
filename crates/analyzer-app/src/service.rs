@@ -9,6 +9,17 @@ use crate::{
 use anyhow::{Result, anyhow, bail};
 use std::{fs, path::PathBuf};
 
+/// An opaque plan binds frozen evidence/configuration to its original session.
+pub struct PreparedAiAnalysis {
+    session: AnalysisSession,
+    prepared: core::ai::PreparedAi,
+}
+impl PreparedAiAnalysis {
+    pub fn plan(&self) -> &core::ai::AiPlan {
+        self.prepared.plan()
+    }
+}
+
 pub struct AnalysisService;
 impl AnalysisService {
     pub fn windows_process_is_elevated() -> Result<bool> {
@@ -243,8 +254,31 @@ impl AnalysisService {
             session.validate_selection(selection)?;
         }
         let _operation = session.lock_operation(ctx)?;
+        let config = match config {
+            Some(config) => Ok(config.clone()),
+            None => ConfigService::load(&options.config_path),
+        };
+        let result = config
+            .and_then(|config| {
+                Self::prepare_ai_with_config(session, options, selection, &config, ctx)
+            })
+            .and_then(|p| core::ai::analyze_prepared_with_context(p.prepared, ctx, |_, _, _| {}));
+        Self::finish_ai(session, result, ctx)
+    }
+
+    /// Pure local planning: no model request or connection check is performed.
+    pub fn prepare_ai_with_config(
+        session: &AnalysisSession,
+        options: &AiOptions,
+        selection: Option<&RecordSelection>,
+        config: &core::ai::AiConfig,
+        ctx: &ExecutionContext,
+    ) -> Result<PreparedAiAnalysis> {
+        if let Some(selection) = selection {
+            session.validate_selection(selection)?;
+        }
         ctx.emit(Stage::AiPreparing, None, 0, None);
-        let result = session.with_report(|report| {
+        let prepared = session.with_report(|report| {
             let ids = match options.scope {
                 AiScope::All => None,
                 AiScope::Matches => {
@@ -263,21 +297,29 @@ impl AnalysisService {
                     records.push(record);
                 }
             }
-            let config = match config {
-                Some(config) => {
-                    config.validate()?;
-                    config.clone()
-                }
-                None => ConfigService::load(&options.config_path)?,
-            };
-            core::ai::analyze_report_with_context(
-                &records,
-                &config,
-                options.include_payload,
-                ctx,
-                |_, _, _| {},
-            )
-        })?;
+            core::ai::prepare_with_context(&records, config, options.include_payload, ctx)
+        })??;
+        Ok(PreparedAiAnalysis {
+            session: session.clone(),
+            prepared,
+        })
+    }
+
+    pub fn analyze_prepared_ai(
+        prepared: PreparedAiAnalysis,
+        ctx: &ExecutionContext,
+    ) -> Result<AnalysisOutcome> {
+        let session = prepared.session;
+        let _operation = session.lock_operation(ctx)?;
+        let result = core::ai::analyze_prepared_with_context(prepared.prepared, ctx, |_, _, _| {});
+        Self::finish_ai(&session, result, ctx)
+    }
+
+    fn finish_ai(
+        session: &AnalysisSession,
+        result: Result<core::ai::ControlledAiAnalysis>,
+        ctx: &ExecutionContext,
+    ) -> Result<AnalysisOutcome> {
         let mut report = session
             .0
             .report
@@ -295,6 +337,10 @@ impl AnalysisService {
                     for finding in &mut analysis.findings {
                         finding.id = format!("ai:run:{run}:{}", finding.id);
                     }
+                }
+                if let Some(summary) = analysis.local_summary.take() {
+                    let position = format!("ai-run:{}", report.ai_runs.len() + 1);
+                    report.warn("AI 本地整理", Some(position), summary);
                 }
                 report.findings.extend(analysis.findings);
                 report.ai_runs.push(analysis.run);

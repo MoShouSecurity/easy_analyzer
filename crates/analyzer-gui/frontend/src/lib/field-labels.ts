@@ -102,7 +102,9 @@ export function logFieldLabel(key: string): string {
     if (normalized.startsWith(prefix)) {
       const field = normalized
         .slice(prefix.length)
-        .replace(/_attributes\./g, ".");
+        // EVTX emits XML attributes as #attributes; accept the older
+        // _attributes forms too, without leaving an extra path separator.
+        .replace(/(?:\.#attributes|\.?_attributes)\./g, ".");
       return lookup(systemLabels, field) ?? key;
     }
   }

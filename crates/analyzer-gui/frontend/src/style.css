@@ -180,29 +180,11 @@ small {
   font-size: 13px;
 }
 .brand-mark {
-  background: var(--accent);
-  width: 20px;
-  height: 20px;
-  border-radius: 5px;
-  position: relative;
+  display: block;
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
   flex-shrink: 0;
-}
-.brand-mark i {
-  position: absolute;
-  background: #fff;
-  height: 2px;
-  left: 5px;
-  top: 5px;
-  width: 10px;
-  border-radius: 1px;
-}
-.brand-mark i:nth-child(2) {
-  top: 9px;
-  width: 7px;
-}
-.brand-mark i:nth-child(3) {
-  top: 13px;
-  width: 10px;
 }
 .toolbar-session {
   display: flex;
@@ -1530,6 +1512,7 @@ small {
 }
 .ai-privacy {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
   flex-shrink: 0;
@@ -2072,4 +2055,192 @@ small {
   .spin {
     animation: none;
   }
+}
+
+.ai-plan-preview {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  font-size: 12px;
+}
+.ai-plan-preview > span {
+  flex: 1;
+}
+.ai-budget-details {
+  order: 1;
+}
+.ai-budget-details summary {
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ai-budget-details[open] {
+  flex-basis: 100%;
+}
+.ai-budget-details > div {
+  display: grid;
+  gap: 5px;
+  padding-top: 6px;
+}
+.ai-budget-details small {
+  color: var(--muted);
+}
+.ai-page-body {
+  gap: 10px;
+  overflow: hidden;
+}
+.ai-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+  max-height: max(210px, 40%);
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+.ai-controls > * {
+  flex-shrink: 0;
+}
+.ai-controls .ai-summary-main {
+  padding: 8px 10px;
+  gap: 8px;
+}
+.ai-controls .ai-symbol {
+  width: 30px;
+  height: 30px;
+}
+.ai-controls .ai-summary-main strong {
+  font-size: 18px;
+}
+.ai-controls .ai-summary-main p {
+  margin-top: 1px;
+}
+.ai-controls .ai-service {
+  padding: 5px 10px;
+  gap: 12px;
+}
+.ai-scope-row > .btn {
+  margin-left: auto;
+}
+.ai-results {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ai-results-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+.ai-results-heading > span {
+  font-weight: 500;
+  white-space: nowrap;
+}
+.ai-results-heading .filter-row {
+  flex: 1;
+  min-width: 0;
+}
+.ai-filter-dialog {
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+}
+.ai-filter-dialog fieldset {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.ai-filter-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+}
+.ai-filter-flow {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+}
+@media (max-width: 1023px) {
+  .ai-scope-row {
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .ai-scope-row > .section-label-text {
+    display: none;
+  }
+  .ai-summary-main .btn {
+    white-space: nowrap;
+  }
+  .ai-controls .ai-service {
+    gap: 8px;
+  }
+}
+.local-ai-summary {
+  flex-shrink: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+}
+.local-ai-summary summary {
+  cursor: pointer;
+  color: var(--warning);
+  font-weight: 500;
+}
+.local-ai-summary p {
+  margin: 8px 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.local-ai-summary pre {
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.ai-controls .ai-summary-main > div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.ai-controls .ai-summary-main strong {
+  font-size: 16px;
+  line-height: 22px;
+  white-space: nowrap;
+}
+.ai-controls .ai-summary-main p {
+  margin: 0;
+  line-height: 18px;
+  flex: 1;
+}
+.ai-controls .ai-service {
+  line-height: 16px;
+  padding: 4px 10px;
+}
+.ai-history-dialog {
+  width: min(760px, calc(100vw - 48px));
+}
+.ai-history-dialog .history-panel {
+  margin-top: 16px;
+}
+.ai-history-dialog .history-scroll {
+  max-height: min(420px, calc(100vh - 220px));
+}
+.ai-controls .local-ai-summary {
+  padding: 6px 10px;
 }

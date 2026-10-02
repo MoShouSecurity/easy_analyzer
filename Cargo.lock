@@ -47,7 +47,7 @@ dependencies = [
 
 [[package]]
 name = "analyzer-app"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "analyzer-core",
  "anyhow",
@@ -59,7 +59,7 @@ dependencies = [
 
 [[package]]
 name = "analyzer-core"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -77,7 +77,7 @@ dependencies = [
 
 [[package]]
 name = "analyzer-gui"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "analyzer-app",
  "anyhow",
@@ -985,7 +985,7 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "easy-analyzer"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "analyzer-app",
  "anyhow",

@@ -74,7 +74,11 @@ fn main() -> anyhow::Result<()> {
                 "main",
                 tauri::WebviewUrl::App("index.html".into()),
             )
-            .title("Easy Analyzer")
+            .title(if args.qa {
+                "Easy Analyzer · 合成验收"
+            } else {
+                "Easy Analyzer"
+            })
             .inner_size(size.0, size.1)
             .decorations(cfg!(target_os = "macos"))
             .min_inner_size(960., 600.)
@@ -106,6 +110,7 @@ fn main() -> anyhow::Result<()> {
             bridge::get_ai_batches,
             bridge::apply_config,
             bridge::config_operation,
+            bridge::prepare_ai,
             bridge::start_ai,
             bridge::start_export,
             bridge::pick_paths
