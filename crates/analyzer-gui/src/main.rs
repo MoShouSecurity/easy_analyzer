@@ -1,5 +1,6 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 mod bridge;
+mod elevation;
 mod model;
 use std::path::PathBuf;
 use tauri::Manager;
@@ -11,6 +12,7 @@ pub struct Args {
     pub qa: bool,
     pub qa_ai: bool,
     pub narrow: bool,
+    pub live_processes: bool,
 }
 fn arguments() -> anyhow::Result<Args> {
     let mut result = Args::default();
@@ -30,6 +32,7 @@ fn arguments() -> anyhow::Result<Args> {
                 )
             }
             "--temporary" => result.temporary = true,
+            "--live-processes" => result.live_processes = true,
             "--qa" => {
                 result.qa = true;
                 result.temporary = true;
@@ -42,7 +45,7 @@ fn arguments() -> anyhow::Result<Args> {
             }
             "--help" => {
                 println!(
-                    "easy-analyzer-gui [--input 文件]... [--config 配置]\n合成验收：--qa [--qa-ai] [--narrow] [--temporary]"
+                    "easy-analyzer-gui [--input 文件]... [--config 配置] [--live-processes]\n合成验收：--qa [--qa-ai] [--narrow] [--temporary]"
                 );
                 std::process::exit(0);
             }
@@ -81,11 +84,19 @@ fn main() -> anyhow::Result<()> {
                 .title_bar_style(tauri::TitleBarStyle::Overlay)
                 .hidden_title(true)
                 .traffic_light_position(tauri::LogicalPosition::new(16., 20.));
+            #[cfg(windows)]
+            let builder = if elevation::status().0 == Some(true) {
+                // Separate WebView profiles let normal and administrator windows coexist.
+                builder.data_directory(app.path().app_data_dir()?.join("webview-admin"))
+            } else {
+                builder
+            };
             builder.build()?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             bridge::initialize,
+            bridge::request_elevation,
             bridge::save_preferences,
             bridge::start_import,
             bridge::cancel_task,

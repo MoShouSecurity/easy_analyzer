@@ -40,6 +40,7 @@ pub struct Inner {
     pub cancel: Option<Arc<dyn Fn() + Send + Sync>>,
     pub data_dir: PathBuf,
     pub args: Args,
+    pub elevation_pending: bool,
 }
 impl Desktop {
     pub fn new(data_dir: PathBuf, args: Args) -> Self {
@@ -60,6 +61,7 @@ impl Desktop {
             cancel: None,
             data_dir,
             args,
+            elevation_pending: false,
         })))
     }
     pub fn lock(&self) -> Result<MutexGuard<'_, Inner>> {
@@ -100,6 +102,7 @@ fn stage_name(s: Stage) -> String {
     .into()
 }
 fn bootstrap_value(s: &Inner) -> Bootstrap {
+    let (elevated, elevation_error) = crate::elevation::status();
     Bootstrap {
         preferences: s.prefs.clone(),
         config: PublicConfig::from(&s.config),
@@ -109,6 +112,9 @@ fn bootstrap_value(s: &Inner) -> Bootstrap {
         selection: s.selection_info.clone(),
         busy: s.busy.clone(),
         platform: std::env::consts::OS.into(),
+        elevated,
+        elevation_error,
+        live_processes: s.args.live_processes,
         capture_dir: s.data_dir.join("captured").display().to_string(),
         inputs: s
             .args
@@ -128,6 +134,27 @@ fn atomic_preferences(path: &Path, prefs: &Preferences) -> Result<()> {
     file.as_file().sync_all()?;
     file.persist(path).map_err(|e| e.error)?;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn request_elevation(
+    state: State<'_, Desktop>,
+) -> Rpc<crate::elevation::ElevationResult> {
+    let desktop = state.inner().clone();
+    {
+        let mut s = desktop.lock().map_err(|e| e.to_string())?;
+        if s.busy.is_some() || s.elevation_pending {
+            return Err("请等待当前任务或 UAC 授权完成".into());
+        }
+        s.elevation_pending = true;
+    }
+    let result = tauri::async_runtime::spawn_blocking(crate::elevation::request_admin_window).await;
+    if let Ok(mut s) = desktop.lock() {
+        s.elevation_pending = false;
+    }
+    rpc(result
+        .map_err(|e| anyhow!("Windows 提权任务失败：{e}"))
+        .and_then(|value| value))
 }
 #[tauri::command]
 pub async fn initialize(app: AppHandle, state: State<'_, Desktop>) -> Rpc<Bootstrap> {
@@ -234,7 +261,7 @@ fn start_job(
     run: impl FnOnce(&ExecutionContext) -> Result<WorkerResult> + Send + 'static,
 ) -> Result<TaskMessage> {
     let mut s = desktop.lock()?;
-    if s.busy.is_some() {
+    if s.busy.is_some() || s.elevation_pending {
         bail!("请等待当前任务完成");
     }
     let handle = task::spawn_operation(run);

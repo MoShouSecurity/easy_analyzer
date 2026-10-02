@@ -60,6 +60,9 @@ export interface Bootstrap {
   selection: SelectionInfo;
   busy: TaskMessage | null;
   platform: string;
+  elevated: boolean | null;
+  elevation_error: string | null;
+  live_processes: boolean;
   capture_dir: string;
   inputs: string[];
   qa: boolean;

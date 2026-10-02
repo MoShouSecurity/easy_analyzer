@@ -14,6 +14,8 @@ import type {
 } from "../types";
 export const api = {
   initialize: () => invoke<Bootstrap>("initialize"),
+  elevate: () =>
+    invoke<"launched" | "cancelled" | "already_elevated">("request_elevation"),
   view: (request: ViewRequest) => invoke<ViewResponse>("get_view", { request }),
   detail: (sessionId: number, id: string) =>
     invoke<DetailResponse>("get_detail", { sessionId, id }),

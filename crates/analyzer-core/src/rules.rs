@@ -346,8 +346,9 @@ mod tests {
     }
     #[test]
     fn spaced_failures_do_not_imply_a_burst() {
-        let mut r = crate::ingest::ingest_file(
-            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/auth.log"),
+        let mut r = crate::ingest::ingest_bytes(
+            "auth.log",
+            include_bytes!("../../../tests/fixtures/auth.log"),
             &crate::IngestOptions::default(),
         )
         .unwrap();

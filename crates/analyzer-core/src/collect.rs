@@ -7,6 +7,21 @@ use anyhow::{Result, bail};
 use chrono::{DateTime, Utc};
 use std::path::Path;
 
+#[cfg(windows)]
+mod windows_access;
+
+/// Token elevation, rather than administrator group membership, determines UAC status.
+pub fn windows_process_is_elevated() -> Result<bool> {
+    #[cfg(windows)]
+    {
+        windows_access::is_elevated()
+    }
+    #[cfg(not(windows))]
+    {
+        bail!("Windows elevation status is unavailable on this operating system")
+    }
+}
+
 pub fn collect_processes() -> Result<AnalysisReport> {
     Ok(collect_processes_with_context(&ExecutionContext::default())?.report)
 }
@@ -17,6 +32,9 @@ pub fn collect_processes_with_context(ctx: &ExecutionContext) -> Result<ReportOu
     if !sysinfo::IS_SUPPORTED_SYSTEM {
         bail!("process collection unsupported on this operating system");
     }
+    #[cfg(windows)]
+    let privilege = windows_access::DebugPrivilege::acquire(ctx);
+    ctx.check()?;
     let mut system = sysinfo::System::new_all();
     system.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
     let mut processes: Vec<ProcessData> = system
@@ -50,12 +68,32 @@ pub fn collect_processes_with_context(ctx: &ExecutionContext) -> Result<ReportOu
     );
     let mut report = AnalysisReport::default();
     report.sources.push(source.clone());
+    #[cfg(windows)]
+    {
+        if let Err(error) = &privilege {
+            report.warn(
+                &source.path,
+                None,
+                format!("调试权限未启用：{error:#}；仍保留可读取的进程信息。"),
+            );
+        }
+    }
+    #[cfg(windows)]
+    let mut missing = (0usize, 0usize, 0usize);
+    let mut cancelled = false;
     for (i, p) in processes.into_iter().enumerate() {
         if ctx
             .tick(Stage::Collecting, Some(&source.path), i, None)
             .is_err()
         {
-            return Ok(ReportOutcome::cancelled(report, &source.path));
+            cancelled = true;
+            break;
+        }
+        #[cfg(windows)]
+        {
+            missing.0 += usize::from(p.path.as_deref().is_none_or(str::is_empty));
+            missing.1 += usize::from(p.command.is_empty());
+            missing.2 += usize::from(p.user.is_none());
         }
         if p.path.as_deref().is_none_or(str::is_empty) {
             report.warn(
@@ -72,6 +110,16 @@ pub fn collect_processes_with_context(ctx: &ExecutionContext) -> Result<ReportOu
             ParseStatus::Parsed,
             RecordData::Process(p),
         ));
+    }
+    #[cfg(windows)]
+    {
+        let (missing_path, missing_command, missing_user) = missing;
+        if missing_path + missing_command + missing_user > 0 {
+            report.warn(&source.path, None, format!("已保留进程字段不可读取：路径 {missing_path} 项、命令行 {missing_command} 项、账户 {missing_user} 项。权限限制、受保护进程或进程退出都可能导致缺失；管理员权限不能保证所有字段可读。"));
+        }
+    }
+    if cancelled {
+        return Ok(ReportOutcome::cancelled(report, &source.path));
     }
     ctx.emit(
         Stage::Collecting,

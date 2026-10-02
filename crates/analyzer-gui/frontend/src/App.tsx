@@ -1,3 +1,4 @@
+import { version as appVersion } from "../package.json";
 import {
   useState,
   useEffect,
@@ -164,6 +165,7 @@ export function App() {
     [task, setTask] = useState<TaskMessage | null>(null),
     [request, setRequest] = useState(initialImport),
     [dragging, setDragging] = useState(false),
+    [elevationBusy, setElevationBusy] = useState(false),
     [scope, setScope] = useState("suspicious"),
     [payload, setPayload] = useState(false),
     [exportOpen, setExportOpen] = useState(false),
@@ -212,7 +214,7 @@ export function App() {
     overview = data?.overview || lastView?.overview,
     active = filters[screen],
     hasSession = boot?.session_id !== null && !!boot,
-    busy = !!task,
+    busy = !!task || elevationBusy,
     narrow = width < 1200,
     compact = width < 1024;
   const refresh = useCallback(
@@ -379,6 +381,7 @@ export function App() {
           ...v,
           capture_dir: fresh.capture_dir,
           paths: fresh.inputs,
+          live: fresh.live_processes,
         }));
         if (fresh.config_error) setError(fresh.config_error);
         const win = getCurrentWebviewWindow();
@@ -398,17 +401,21 @@ export function App() {
           }
         });
         stopClose = await win.onCloseRequested(async (event) => {
-          if (closing.current) return;
+          if (closing.current) {
+            event.preventDefault();
+            return;
+          }
           if (taskRef.current) {
             event.preventDefault();
             setCloseOpen(true);
           } else {
-            event.preventDefault();
+            closing.current = true;
             try {
               await api.preferences(prefsRef.current);
-              closing.current = true;
-              await win.close();
+              // Tauri destroys the window after this awaited handler returns.
             } catch (e) {
+              event.preventDefault();
+              closing.current = false;
               setError(`偏好保存失败：${String(e)}`);
             }
           }
@@ -455,6 +462,27 @@ export function App() {
     setFilters((v) => ({ ...v, [screen]: updated }));
     setFocus(null);
     void refresh(screen, updated, null, true);
+  };
+  const requestElevation = async () => {
+    if (busy || boot?.platform !== "windows") return;
+    setElevationBusy(true);
+    setError(null);
+    setNotice("等待 UAC 授权");
+    try {
+      const result = await api.elevate();
+      setNotice(
+        result === "launched"
+          ? "管理员窗口已启动；原窗口和证据保留，请在新窗口开始本机采集"
+          : result === "cancelled"
+            ? "已取消 UAC 授权，仍使用当前窗口"
+            : "当前窗口已具有管理员权限",
+      );
+    } catch (error) {
+      setNotice("提权未完成，当前会话保留");
+      setError(`无法启动管理员窗口：${String(error)}`);
+    } finally {
+      setElevationBusy(false);
+    }
   };
   const pick = async (kind: string) => {
     try {
@@ -1100,7 +1128,11 @@ export function App() {
                 variant="ghost"
                 size="icon"
                 aria-label="关闭窗口"
-                onClick={() => void getCurrentWebviewWindow().close()}
+                onClick={() =>
+                  void getCurrentWebviewWindow()
+                    .close()
+                    .catch((e) => setError(`关闭窗口失败：${String(e)}`))
+                }
               >
                 <X size={14} />
               </Button>
@@ -1174,7 +1206,7 @@ export function App() {
                 </button>
               </Tooltip>
               <div className="sidebar-version">
-                Easy Analyzer <span>1.1.1</span>
+                Easy Analyzer <span>{appVersion}</span>
               </div>
             </div>
           </aside>
@@ -1239,6 +1271,10 @@ export function App() {
                   onChange={setRequest}
                   busy={busy}
                   platform={boot?.platform || "macos"}
+                  elevated={boot?.elevated ?? null}
+                  elevationError={boot?.elevation_error ?? null}
+                  elevationBusy={elevationBusy}
+                  onElevate={() => void requestElevation()}
                   onPick={(k) => void pick(k)}
                   onStart={() => void launch(() => api.import(request))}
                   dragging={dragging}
@@ -1808,7 +1844,7 @@ export function App() {
         </div>
         <footer className="statusbar">
           <div>
-            {busy ? (
+            {task ? (
               <>
                 <LoaderCircle size={12} className="spin" />
                 <span>
@@ -1839,7 +1875,11 @@ export function App() {
               </>
             ) : (
               <>
-                <span className="status-dot" />
+                {elevationBusy ? (
+                  <LoaderCircle size={12} className="spin" />
+                ) : (
+                  <span className="status-dot" />
+                )}
                 <span className="status-notice" title={notice}>
                   {notice}
                 </span>

@@ -1210,6 +1210,14 @@ small {
   min-height: 0;
   gap: 10px;
 }
+.import-scroll {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  gap: 10px;
+  overflow: auto;
+}
 .drop-zone {
   border: 1px dashed var(--line-strong);
   background: var(--surface);
@@ -1267,6 +1275,33 @@ small {
   overflow: hidden;
   text-overflow: ellipsis;
   margin-bottom: 2px;
+  flex-shrink: 0;
+}
+.collection-permissions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+.collection-permissions > div {
+  flex: 1;
+  min-width: 0;
+}
+.collection-permissions .small-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.collection-permissions p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.collection-permissions > .btn {
   flex-shrink: 0;
 }
 .file-list {

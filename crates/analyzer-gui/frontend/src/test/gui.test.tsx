@@ -12,6 +12,7 @@ import { App } from "../App";
 import { DataTable } from "../components/DataTable";
 import { Inspector, SourceInspector } from "../components/Inspector";
 import { SettingsView } from "../components/SettingsView";
+import capability from "../../../capabilities/main.json";
 import type {
   Bootstrap,
   ViewRequest,
@@ -27,6 +28,7 @@ const mock = vi.hoisted(() => ({
     onCloseRequested: vi.fn(),
     startDragging: vi.fn(),
     close: vi.fn(),
+    destroy: vi.fn(),
     minimize: vi.fn(),
     toggleMaximize: vi.fn(),
   },
@@ -62,6 +64,9 @@ const boot: Bootstrap = {
   selection: { id: 11, count: 150, label: "日志 · 完整筛选" },
   busy: null,
   platform: "macos",
+  elevated: null,
+  elevation_error: null,
+  live_processes: false,
   capture_dir: "/tmp/captured",
   inputs: [],
   qa: false,
@@ -161,6 +166,207 @@ beforeEach(() => {
   });
 });
 afterEach(cleanup);
+describe("window closing", () => {
+  function desktopClose() {
+    const invoke = mock.invoke.getMockImplementation()!;
+    mock.invoke.mockImplementation((command, args) =>
+      command === "initialize"
+        ? Promise.resolve({ ...boot, platform: "windows", elevated: false })
+        : invoke(command, args),
+    );
+    // Reproduce the installed Tauri onCloseRequested contract: await the
+    // handler, then destroy only when it did not prevent the close event.
+    const requestClose = async () => {
+      const handler = mock.window.onCloseRequested.mock.calls.at(-1)![0];
+      const event = { preventDefault: vi.fn() };
+      await handler(event);
+      if (!event.preventDefault.mock.calls.length) {
+        if (!capability.permissions.includes("core:window:allow-destroy"))
+          throw new Error("window.destroy not allowed");
+        await mock.window.destroy();
+      }
+      return event;
+    };
+    mock.window.close.mockImplementation(requestClose);
+    return requestClose;
+  }
+  it("saves preferences and closes from the titlebar without another close event", async () => {
+    desktopClose();
+    render(<App />);
+    await waitFor(() =>
+      expect(mock.window.onCloseRequested).toHaveBeenCalled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "关闭窗口" }));
+    await waitFor(() => expect(mock.window.destroy).toHaveBeenCalledOnce());
+    expect(mock.window.close).toHaveBeenCalledOnce();
+    expect(
+      mock.invoke.mock.calls.filter(([c]) => c === "save_preferences"),
+    ).toHaveLength(1);
+  });
+  it("also completes the operating system close request", async () => {
+    const requestClose = desktopClose();
+    render(<App />);
+    await waitFor(() =>
+      expect(mock.window.onCloseRequested).toHaveBeenCalled(),
+    );
+    await act(requestClose);
+    expect(mock.window.destroy).toHaveBeenCalledOnce();
+    expect(mock.window.close).not.toHaveBeenCalled();
+  });
+  it("allows retry after preferences fail and ignores repeated clicks while saving", async () => {
+    desktopClose();
+    const invoke = mock.invoke.getMockImplementation()!;
+    let rejectSave!: (reason: string) => void;
+    mock.invoke.mockImplementation((command, args) =>
+      command === "save_preferences"
+        ? new Promise<void>((_, reject) => {
+            rejectSave = reject;
+          })
+        : invoke(command, args),
+    );
+    render(<App />);
+    await waitFor(() =>
+      expect(mock.window.onCloseRequested).toHaveBeenCalled(),
+    );
+    const close = screen.getByRole("button", { name: "关闭窗口" });
+    fireEvent.click(close);
+    fireEvent.click(close);
+    expect(
+      mock.invoke.mock.calls.filter(([c]) => c === "save_preferences"),
+    ).toHaveLength(1);
+    expect(mock.window.destroy).not.toHaveBeenCalled();
+    await act(async () => rejectSave("无法写入"));
+    await screen.findByText("偏好保存失败：无法写入");
+    mock.invoke.mockImplementation(invoke);
+    fireEvent.click(close);
+    await waitFor(() => expect(mock.window.destroy).toHaveBeenCalledOnce());
+  });
+  it("keeps the window open while cancelling an active task to preserve results", async () => {
+    const requestClose = desktopClose();
+    const invoke = mock.invoke.getMockImplementation()!;
+    mock.invoke.mockImplementation((command, args) =>
+      command === "initialize"
+        ? Promise.resolve({
+            ...boot,
+            platform: "windows",
+            busy: {
+              task_id: 99,
+              session_id: 7,
+              epoch: 0,
+              revision: 1,
+              kind: "ai",
+              status: "running",
+              label: "AI",
+              stage: null,
+              completed: null,
+              total: null,
+              error: null,
+              saved_paths: [],
+            },
+          })
+        : invoke(command, args),
+    );
+    render(<App />);
+    await waitFor(() =>
+      expect(mock.window.onCloseRequested).toHaveBeenCalled(),
+    );
+    await act(requestClose);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "取消任务并保留结果" }),
+    );
+    await waitFor(() =>
+      expect(mock.invoke).toHaveBeenCalledWith("cancel_task", { taskId: 99 }),
+    );
+    expect(mock.window.destroy).not.toHaveBeenCalled();
+    expect(mock.invoke.mock.calls.some(([c]) => c === "save_preferences")).toBe(
+      false,
+    );
+  });
+});
+describe("Windows UAC collection", () => {
+  function windowsBoot(elevated = false) {
+    return { ...boot, platform: "windows", elevated, live_processes: elevated };
+  }
+  it("requires an explicit click and cancellation preserves the current session", async () => {
+    mock.invoke.mockImplementation(async (command: string, args: any) => {
+      if (command === "initialize") return windowsBoot();
+      if (command === "get_view") return response(args.request);
+      if (command === "request_elevation") return "cancelled";
+    });
+    render(<App />);
+    const button = await screen.findByRole("button", {
+      name: "以管理员身份启动",
+    });
+    expect(
+      mock.invoke.mock.calls.some(
+        ([command]) => command === "request_elevation",
+      ),
+    ).toBe(false);
+    fireEvent.click(button);
+    await screen.findByText("已取消 UAC 授权，仍使用当前窗口");
+    expect(button).toBeEnabled();
+    expect(
+      mock.invoke.mock.calls.some(([command]) =>
+        ["reset_session", "start_import", "start_ai"].includes(command),
+      ),
+    ).toBe(false);
+    expect(mock.window.close).not.toHaveBeenCalled();
+    expect(screen.getByText("普通权限")).toBeInTheDocument();
+  });
+  it("keeps the old window open after an elevated window starts", async () => {
+    mock.invoke.mockImplementation(async (command: string, args: any) => {
+      if (command === "initialize") return windowsBoot();
+      if (command === "get_view") return response(args.request);
+      if (command === "request_elevation") return "launched";
+    });
+    render(<App />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "以管理员身份启动" }),
+    );
+    await screen.findByText(
+      "管理员窗口已启动；原窗口和证据保留，请在新窗口开始本机采集",
+    );
+    expect(mock.window.close).not.toHaveBeenCalled();
+    expect(screen.getByText("普通权限")).toBeInTheDocument();
+  });
+  it("shows elevated status without prompting again or collecting automatically", async () => {
+    mock.invoke.mockImplementation(async (command: string, args: any) => {
+      if (command === "initialize") return windowsBoot(true);
+      if (command === "get_view") return response(args.request);
+    });
+    render(<App />);
+    await screen.findByText("管理员权限");
+    expect(
+      screen.queryByRole("button", { name: "以管理员身份启动" }),
+    ).toBeNull();
+    expect(
+      screen.getByRole("checkbox", { name: "采集本机进程" }),
+    ).toBeChecked();
+    expect(
+      mock.invoke.mock.calls.some(([command]) =>
+        ["request_elevation", "start_import", "start_ai"].includes(command),
+      ),
+    ).toBe(false);
+  });
+  it("re-enables the UAC button after a launch error without clearing evidence", async () => {
+    mock.invoke.mockImplementation(async (command: string, args: any) => {
+      if (command === "initialize") return windowsBoot();
+      if (command === "get_view") return response(args.request);
+      if (command === "request_elevation") throw "模拟启动失败";
+    });
+    render(<App />);
+    const button = await screen.findByRole("button", {
+      name: "以管理员身份启动",
+    });
+    fireEvent.click(button);
+    await screen.findByText("无法启动管理员窗口：模拟启动失败");
+    expect(button).toBeEnabled();
+    expect(mock.window.close).not.toHaveBeenCalled();
+    expect(
+      mock.invoke.mock.calls.some(([command]) => command === "reset_session"),
+    ).toBe(false);
+  });
+});
 it("normal startup has no evidence, imports or automatic AI requests", async () => {
   mock.invoke.mockImplementation(async (c: string) =>
     c === "initialize"

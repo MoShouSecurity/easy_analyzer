@@ -11,6 +11,10 @@ use std::{fs, path::PathBuf};
 
 pub struct AnalysisService;
 impl AnalysisService {
+    pub fn windows_process_is_elevated() -> Result<bool> {
+        core::collect::windows_process_is_elevated()
+    }
+
     pub fn validate(request: &AnalysisRequest) -> Result<()> {
         if request.inputs.is_empty()
             && !request.auto_load
