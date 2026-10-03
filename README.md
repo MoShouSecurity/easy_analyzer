@@ -79,3 +79,9 @@ cargo run --locked -p analyzer-gui
 ```
 
 macOS 本地打包：CLI 使用 `bash tools/package-macos.sh`，GUI 使用 `bash scripts/package_gui_macos.sh`。
+
+## 开源协议
+
+本项目采用 [MIT License](LICENSE)。
+
+Copyright (c) 2026 Easy Analyzer contributors
