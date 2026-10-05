@@ -16,6 +16,67 @@ const mock = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mock.invoke }));
 afterEach(cleanup);
 beforeEach(() => mock.invoke.mockReset());
+it("defaults the project name to the client and saves a blank name using the client", async () => {
+  const save = vi.fn().mockResolvedValue(undefined);
+  render(
+    <ProjectEditor
+      info={newProject()}
+      busy={false}
+      onClose={() => {}}
+      onSave={save}
+    />,
+  );
+  fireEvent.change(screen.getByLabelText("客户单位 *"), {
+    target: { value: "合成客户甲" },
+  });
+  expect(screen.getByLabelText("项目名称")).toHaveValue("合成客户甲");
+  fireEvent.change(screen.getByLabelText("客户单位 *"), {
+    target: { value: "合成客户乙" },
+  });
+  expect(screen.getByLabelText("项目名称")).toHaveValue("合成客户乙");
+  fireEvent.change(screen.getByLabelText("项目名称"), {
+    target: { value: " " },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "确认项目资料" }));
+  await waitFor(() =>
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "合成客户乙",
+        client: "合成客户乙",
+      }),
+    ),
+  );
+});
+it("preserves custom and existing project names when the client changes", () => {
+  const { unmount } = render(
+    <ProjectEditor
+      info={newProject()}
+      busy={false}
+      onClose={() => {}}
+      onSave={vi.fn()}
+    />,
+  );
+  fireEvent.change(screen.getByLabelText("项目名称"), {
+    target: { value: "自定义响应名称" },
+  });
+  fireEvent.change(screen.getByLabelText("客户单位 *"), {
+    target: { value: "合成客户甲" },
+  });
+  expect(screen.getByLabelText("项目名称")).toHaveValue("自定义响应名称");
+  unmount();
+  render(
+    <ProjectEditor
+      info={{ ...newProject(), name: "合成客户甲", client: "合成客户甲" }}
+      busy={false}
+      onClose={() => {}}
+      onSave={vi.fn()}
+    />,
+  );
+  fireEvent.change(screen.getByLabelText("客户单位 *"), {
+    target: { value: "合成客户乙" },
+  });
+  expect(screen.getByLabelText("项目名称")).toHaveValue("合成客户甲");
+});
 it("validates response times and preserves metadata until accepted", async () => {
   const save = vi.fn().mockRejectedValue("响应时间必须含时区");
   render(
@@ -26,7 +87,7 @@ it("validates response times and preserves metadata until accepted", async () =>
       onSave={save}
     />,
   );
-  fireEvent.change(screen.getByLabelText("项目名称 *"), {
+  fireEvent.change(screen.getByLabelText("项目名称"), {
     target: { value: "合成项目" },
   });
   fireEvent.change(screen.getByLabelText("客户单位 *"), {
@@ -43,7 +104,7 @@ it("validates response times and preserves metadata until accepted", async () =>
   });
   fireEvent.click(screen.getByRole("button", { name: "确认项目资料" }));
   await screen.findByText("响应时间必须含时区");
-  expect(screen.getByLabelText("项目名称 *")).toHaveValue("合成项目");
+  expect(screen.getByLabelText("项目名称")).toHaveValue("合成项目");
 });
 it("searches project metadata and clearly identifies missing files", async () => {
   mock.invoke.mockResolvedValue([

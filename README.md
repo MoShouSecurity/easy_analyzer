@@ -26,17 +26,19 @@ Rust 开发的应急响应分析工具，提供 CLI 和桌面 GUI，用于日志
 ./easy-analyzer -h
 
 # 新建项目并追加证据，手动保存
-./easy-analyzer project create response.eair --name "客户甲应急响应" --client "客户甲"
+./easy-analyzer project create response.eair --client "客户甲"
 ./easy-analyzer project import response.eair host-a/auth.log capture.pcap --ioc indicators.csv
 ./easy-analyzer project open response.eair -H reports/response.html
 ./easy-analyzer project list --search "客户甲"
 
 # 直接分析并保存新项目；IOC 参数可以重复
 ./easy-analyzer analyze auth.log --save-project response-new.eair \
-  --name "客户乙应急响应" --client "客户乙" --ioc-value example.com --ioc indicators.txt
+  --client "客户乙" --ioc-value example.com --ioc indicators.txt
 ```
 
-启用 AI 时，先运行 `./easy-analyzer config init`，在 `config.toml` 中填写服务地址、模型和密钥，再添加 `-a`；`-S suspicious` 可限定为本地可疑项。
+新建项目的名称默认使用客户单位；可以用 `project create --name` 或分析命令的 `--project-name` 指定名称。
+
+启用 AI 时，先运行 `./easy-analyzer config init`，在 `config.toml` 中填写服务地址、模型和密钥，再添加 `-a`；`-S suspicious` 可限定为本地可疑项。新配置默认按模型上下文预算自动规划发送，上下文上限初始为 1000000 token，可在设置中调整。
 
 ## GUI
 

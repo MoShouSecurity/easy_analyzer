@@ -20,6 +20,64 @@ fn ok(root: &Path, args: &[&str]) -> serde_json::Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 #[test]
+fn project_names_default_to_clients_and_custom_names_survive_edits() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let created = ok(
+        root,
+        &["project", "create", "a.eair", "--client", " 合成客户甲 "],
+    );
+    assert_eq!(created["info"]["name"], "合成客户甲");
+    assert_eq!(created["info"]["client"], "合成客户甲");
+    let edited = ok(
+        root,
+        &["project", "edit", "a.eair", "--client", "合成客户乙"],
+    );
+    assert_eq!(edited["info"]["name"], "合成客户甲");
+    let reset = ok(root, &["project", "edit", "a.eair", "--name", " "]);
+    assert_eq!(reset["info"]["name"], "合成客户乙");
+    assert!(
+        !run(root, &["project", "create", "invalid.eair"])
+            .status
+            .success()
+    );
+    assert!(!root.join("invalid.eair").exists());
+
+    std::fs::write(root.join("input.log"), "synthetic evidence\n").unwrap();
+    ok(
+        root,
+        &[
+            "analyze",
+            "input.log",
+            "--save-project",
+            "b.eair",
+            "--client",
+            "合成客户丙",
+            "--output",
+            "json",
+        ],
+    );
+    let entries = ok(root, &["project", "list", "--client", "合成客户丙"]);
+    assert_eq!(entries[0]["info"]["name"], "合成客户丙");
+    ok(
+        root,
+        &[
+            "analyze",
+            "input.log",
+            "--save-project",
+            "c.eair",
+            "--client",
+            "合成客户丁",
+            "--project-name",
+            "自定义响应",
+            "--output",
+            "json",
+        ],
+    );
+    let entries = ok(root, &["project", "list", "--client", "合成客户丁"]);
+    assert_eq!(entries[0]["info"]["name"], "自定义响应");
+}
+#[test]
 fn cli_projects_create_append_note_edit_and_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();

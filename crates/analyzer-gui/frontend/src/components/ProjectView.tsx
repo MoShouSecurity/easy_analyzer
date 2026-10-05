@@ -37,22 +37,23 @@ export function ProjectEditor({
   onSave: (v: ProjectInfo) => Promise<void>;
 }) {
   const [value, setValue] = useState(info);
+  const [nameEdited, setNameEdited] = useState(Boolean(info.name.trim()));
   const [error, setError] = useState("");
   const fields: [keyof ProjectInfo, string, boolean][] = [
-    ["name", "项目名称", true],
     ["client", "客户单位", true],
+    ["name", "项目名称", false],
     ["response_start", "响应开始时间（含时区）", true],
     ["response_end", "响应结束时间（含时区）", false],
     ["location", "响应地点", false],
     ["responders", "服务人员", false],
   ];
   const submit = async () => {
+    const name = value.name.trim() || value.client.trim();
     if (
-      !value.name.trim() ||
       !value.client.trim() ||
       Number.isNaN(Date.parse(value.response_start))
     ) {
-      setError("请填写项目名称、客户单位和包含时区的开始时间");
+      setError("请填写客户单位和包含时区的开始时间");
       return;
     }
     if (
@@ -64,7 +65,7 @@ export function ProjectEditor({
     }
     setError("");
     try {
-      await onSave(value);
+      await onSave({ ...value, name });
     } catch (e) {
       setError(String(e));
     }
@@ -93,14 +94,21 @@ export function ProjectEditor({
               required={required}
               value={value[key] ?? ""}
               placeholder={
-                key.includes("response_") ? "2026-10-05T09:00:00+08:00" : ""
+                key === "name"
+                  ? "默认使用客户单位，可修改"
+                  : key.includes("response_")
+                    ? "2026-10-05T09:00:00+08:00"
+                    : ""
               }
-              onChange={(e) =>
+              onChange={(e) => {
+                const next = e.target.value;
+                if (key === "name") setNameEdited(Boolean(next.trim()));
                 setValue((v) => ({
                   ...v,
-                  [key]: e.target.value || (key === "response_end" ? null : ""),
-                }))
-              }
+                  [key]: next || (key === "response_end" ? null : ""),
+                  ...(key === "client" && !nameEdited ? { name: next } : {}),
+                }));
+              }}
             />
           </label>
         ))}

@@ -139,7 +139,7 @@ config check 会发送一个不含项目证据的小请求，可能产生服务�
 
 #[derive(Args)]
 pub struct ProjectMetadata {
-    #[arg(long)]
+    #[arg(long, help = "项目名称；新建时默认使用客户单位")]
     pub name: Option<String>,
     #[arg(long)]
     pub client: Option<String>,
@@ -156,7 +156,7 @@ pub struct ProjectMetadata {
 }
 #[derive(Subcommand)]
 pub enum ProjectCommand {
-    /// 创建并保存空项目，名称和客户单位必填
+    /// 创建并保存空项目，客户单位必填，名称默认为客户单位
     Create {
         path: PathBuf,
         #[command(flatten)]
@@ -231,7 +231,7 @@ pub struct CommonArgs {
     pub project: Option<PathBuf>,
     #[arg(long, value_name = "PATH", help = "手动保存项目为 .eair 文件")]
     pub save_project: Option<PathBuf>,
-    #[arg(long, help = "新项目名称；保存新项目时必填")]
+    #[arg(long, help = "新项目名称；默认使用客户单位")]
     pub project_name: Option<String>,
     #[arg(long, help = "客户单位；保存新项目时必填")]
     pub client: Option<String>,

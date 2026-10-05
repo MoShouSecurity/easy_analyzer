@@ -31,6 +31,7 @@ pub struct AiConfig {
     pub batch_bytes: usize,
     /// None preserves legacy byte batching. Some enables context-based planning
     /// and cross-batch synthesis; this is the actual API's shared token limit.
+    #[serde(default)]
     pub context_tokens: Option<usize>,
     pub max_output_tokens: u32,
     /// json_object, json_schema, or none, depending on provider compatibility.
@@ -47,7 +48,7 @@ impl Default for AiConfig {
             api_key_env: String::new(),
             timeout_seconds: 300,
             batch_bytes: 98_304,
-            context_tokens: None,
+            context_tokens: Some(1_000_000),
             max_output_tokens: 65_536,
             response_format: "json_object".into(),
             token_parameter: "max_tokens".into(),
@@ -212,6 +213,7 @@ fn batches(
         records,
         &AiConfig {
             batch_bytes: limit,
+            context_tokens: None,
             ..Default::default()
         },
         include_payload,

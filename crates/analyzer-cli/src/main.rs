@@ -103,9 +103,7 @@ fn run(cli: Cli, cancellation: CancellationToken) -> Result<bool> {
         Some(session)
     } else if args.save_project.is_some() || has_ioc {
         let name = if args.save_project.is_some() {
-            args.project_name
-                .as_deref()
-                .context("保存新项目需要 --project-name")?
+            args.project_name.as_deref().unwrap_or_default()
         } else {
             "临时分析"
         };

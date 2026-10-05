@@ -282,6 +282,7 @@ fn ctrl_c_retains_ai_reply_and_saves_json_without_another_batch() {
         model: "mock".into(),
         api_key: "fake-signal-test-key".into(),
         batch_bytes: 4096,
+        context_tokens: None,
         ..Default::default()
     };
     let config_path = dir.path().join("config.toml");

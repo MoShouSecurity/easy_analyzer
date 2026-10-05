@@ -64,7 +64,7 @@ pub fn command(
         }
         ProjectCommand::Create { path, info } => {
             let mut metadata = ProjectInfo::new(
-                info.name.as_deref().context("--name 为必填项")?,
+                info.name.as_deref().unwrap_or_default(),
                 info.client.as_deref().context("--client 为必填项")?,
             );
             apply(&mut metadata, info);

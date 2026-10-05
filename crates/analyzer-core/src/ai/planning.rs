@@ -291,6 +291,20 @@ mod tests {
         assert!(input_budget(4096, 65536).is_err());
     }
     #[test]
+    fn new_configs_default_to_context_planning_and_byte_mode_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        crate::ai::init_config(&path).unwrap();
+        let config = AiConfig::load(&path).unwrap();
+        assert_eq!(config.context_tokens, Some(1_000_000));
+        let legacy = AiConfig {
+            context_tokens: None,
+            ..config
+        };
+        let decoded: AiConfig = toml::from_str(&toml::to_string(&legacy).unwrap()).unwrap();
+        assert_eq!(decoded.context_tokens, None);
+    }
+    #[test]
     fn unicode_estimation_cancels_and_legacy_configuration_is_compatible() {
         let ctx = ExecutionContext::default();
         assert_eq!(estimated_tokens("abcd中文", &ctx).unwrap(), 8);

@@ -67,6 +67,13 @@ impl ProjectInfo {
         DateTime::parse_from_rfc3339(&self.updated_at)?;
         Ok(())
     }
+    fn normalize(&mut self) {
+        self.name = self.name.trim().into();
+        self.client = self.client.trim().into();
+        if self.name.is_empty() {
+            self.name = self.client.clone();
+        }
+    }
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct ProjectStatus {
@@ -220,8 +227,7 @@ impl ProjectService {
         info.id = Uuid::new_v4().to_string();
         info.created_at = Local::now().to_rfc3339();
         info.updated_at = info.created_at.clone();
-        info.name = info.name.trim().into();
-        info.client = info.client.trim().into();
+        info.normalize();
         info.validate()?;
         let store = Database::new()?;
         {
@@ -271,6 +277,7 @@ impl ProjectService {
         mut info: ProjectInfo,
         ctx: &ExecutionContext,
     ) -> Result<()> {
+        info.normalize();
         info.validate()?;
         let _operation = session.lock_operation(ctx)?;
         let mut c = db(session)?.lock()?;
@@ -281,8 +288,6 @@ impl ProjectService {
             bail!("不能修改项目 UUID");
         }
         info.created_at = old.created_at;
-        info.name = info.name.trim().into();
-        info.client = info.client.trim().into();
         Database::set(c, "project", &info)?;
         touch(c)?;
         tx.commit()?;

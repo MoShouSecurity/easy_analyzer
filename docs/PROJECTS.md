@@ -1,6 +1,6 @@
 # 应急响应项目与 IOC
 
-一次应急响应是一个项目；同一客户的另一次响应新建项目。同一项目可以持续多天，追加多个主机的证据。必填项目名称、客户单位、响应开始时间；开始时间默认本地当前时间，结束时间不得早于开始时间。时间使用带偏移量的 RFC 3339，创建/更新与响应起止时间分别保存。
+一次应急响应是一个项目；同一客户的另一次响应新建项目。同一项目可以持续多天，追加多个主机的证据。必填客户单位、响应开始时间；项目名称默认使用客户单位，可手动修改，留空时使用客户单位。开始时间默认本地当前时间，结束时间不得早于开始时间。时间使用带偏移量的 RFC 3339，创建/更新与响应起止时间分别保存。
 
 ## 使用
 
@@ -20,8 +20,8 @@ easy-analyzer project list --search "客户甲" --from 2026-10-01 --until 2026-1
 # --project 追加到工作数据库；同时指定 --save-project 才写回项目文件
 easy-analyzer analyze host-c/auth.log --project response.eair --save-project response.eair
 
-# 原直接分析仍可用；保存新项目必须提供名称、客户，开始时间可选
-easy-analyzer analyze auth.log --save-project new.eair --name "新响应" --client "客户乙"
+# 原直接分析仍可用；保存新项目必须提供客户，名称和开始时间可选
+easy-analyzer analyze auth.log --save-project new.eair --client "客户乙"
 ```
 
 CLI `project import` 自动保存此次显式操作，`project open` 只读打开，不重新解析或自动调用 AI。`--project` 操作会在私有工作副本中进行，未指定 `--save-project` 时原文件不改变。CLI 显式查询条件在保存时保留，续办时恢复；GUI 各页面筛选分别保存。
