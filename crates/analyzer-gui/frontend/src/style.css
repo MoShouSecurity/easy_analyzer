@@ -2264,6 +2264,19 @@ small {
   margin: 0 auto;
   overflow: auto;
 }
+.ioc-page {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  margin: 0 auto;
+  overflow: auto;
+  scrollbar-gutter: stable;
+  padding-right: 4px;
+}
+.ioc-page > section {
+  flex-shrink: 0;
+  min-width: 0;
+}
 .project-start,
 .project-browser {
   display: flex;
