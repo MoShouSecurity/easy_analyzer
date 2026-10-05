@@ -1,4 +1,6 @@
 export type Screen =
+  | "projects"
+  | "ioc"
   | "import"
   | "overview"
   | "logs"
@@ -53,6 +55,8 @@ export interface TaskMessage {
   saved_paths: string[];
 }
 export interface Bootstrap {
+  project?: ProjectStatus | null;
+  filters?: Record<Screen, Filters> | null;
   preferences: Preferences;
   config: PublicConfig;
   config_loaded: boolean;
@@ -158,6 +162,7 @@ export interface RecordSummary {
 }
 export type EvidenceRecord = RecordSummary & { raw: string };
 export interface Finding {
+  evidence_count?: number;
   id: string;
   origin: string;
   severity: Severity;
@@ -226,6 +231,7 @@ export interface AiBatch {
   error: string | null;
 }
 export interface ViewResponse {
+  project?: ProjectStatus | null;
   session_id: number;
   revision: number;
   overview: Overview;
@@ -242,6 +248,7 @@ export interface ViewResponse {
   selection: SelectionInfo;
 }
 export interface DetailResponse {
+  note?: string | null;
   session_id: number;
   record: EvidenceRecord;
   source: Source | null;
@@ -281,6 +288,8 @@ export const statusLabel: Record<ParseStatus, string> = {
   malformed: "损坏",
 };
 export const screens: Screen[] = [
+  "projects",
+  "ioc",
   "import",
   "overview",
   "logs",
@@ -291,6 +300,8 @@ export const screens: Screen[] = [
   "settings",
 ];
 export const titles: Record<Screen, string> = {
+  projects: "应急响应项目",
+  ioc: "IOC 匹配",
   import: "导入分析",
   overview: "分析概览",
   logs: "日志证据",
@@ -315,4 +326,74 @@ export interface AiPreview {
     evidence_batches: number;
     summary_planned: boolean;
   };
+}
+
+export interface ProjectInfo {
+  id: string;
+  name: string;
+  client: string;
+  response_start: string;
+  response_end: string | null;
+  location: string;
+  responders: string;
+  description: string;
+  created_at: string;
+  updated_at: string;
+}
+export interface ProjectStatus {
+  info: ProjectInfo;
+  path: string | null;
+  dirty: boolean;
+  revision: number;
+}
+export interface ProjectEntry {
+  info: ProjectInfo;
+  path: string;
+  last_opened: string;
+  missing: boolean;
+}
+export interface Indicator {
+  id: string;
+  kind: "ip" | "domain" | "url";
+  value: string;
+  note: string;
+}
+export interface IocInput {
+  paths?: string[];
+  text?: string;
+  csv?: boolean;
+  value?: string;
+  kind?: Indicator["kind"];
+  note?: string;
+}
+export interface IocImport {
+  indicators: Indicator[];
+  issues: { line: number; message: string }[];
+}
+export interface IocHit {
+  value: string;
+  note: string;
+  indicator_id: string;
+  record_id: string;
+  source_id: string;
+  position: string;
+  timestamp: string | null;
+  field: string;
+  matched_value: string;
+  byte_offset: number | null;
+}
+export interface IocView {
+  status: {
+    indicators: number;
+    records: number;
+    needs_rescan: boolean;
+    run: {
+      total_records: number;
+      scanned_records: number;
+      complete: boolean;
+      include_subdomains: boolean;
+    } | null;
+  };
+  indicators: Page<Indicator>;
+  hits: Page<IocHit>;
 }

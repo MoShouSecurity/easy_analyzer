@@ -287,3 +287,55 @@ fn ai_preview_rejects_changed_settings_payload_selection_or_session() {
     );
     assert!(take_ai_plan(&mut state, &request).is_err());
 }
+#[test]
+fn database_project_pages_notes_and_stale_views_are_isolated() {
+    let first = ProjectService::create(ProjectInfo::new("合成甲响应", "合成甲客户")).unwrap();
+    let second = ProjectService::create(ProjectInfo::new("合成乙响应", "合成乙客户")).unwrap();
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
+    ProjectService::append(
+        &first,
+        &AnalysisRequest {
+            inputs: vec![
+                AnalysisInput::File(root.join("auth.log")),
+                AnalysisInput::File(root.join("sample.pcap")),
+            ],
+            ..Default::default()
+        },
+        &ExecutionContext::default(),
+    )
+    .unwrap();
+    let (view, selection) = build_view(
+        &first,
+        &request(&first, Screen::Logs),
+        &ExecutionContext::default(),
+    )
+    .unwrap();
+    assert!(view.project.is_some());
+    assert!(!selection.unwrap().is_empty());
+    assert!(view.records.as_ref().unwrap().total > 0);
+    let id = view.records.unwrap().items[0].id.clone();
+    ProjectService::note(&first, &id, "合成备注", &ExecutionContext::default()).unwrap();
+    assert!(ProjectService::read_note(&second, &id).unwrap().is_none());
+    let desktop = Desktop::new(PathBuf::new(), Args::default());
+    {
+        let mut s = desktop.lock().unwrap();
+        s.session = Some(second);
+        s.latest_view = 1;
+    }
+    let (mut stale, selected) = build_view(
+        &first,
+        &request(&first, Screen::Logs),
+        &ExecutionContext::default(),
+    )
+    .unwrap();
+    assert!(
+        commit_view(
+            &desktop,
+            &first,
+            &request(&first, Screen::Logs),
+            &mut stale,
+            selected
+        )
+        .is_err()
+    );
+}

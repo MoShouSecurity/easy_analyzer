@@ -14,8 +14,8 @@ use std::{
 
 mod planning;
 mod text;
-pub use planning::{AiPlan, PreparedAi, prepare_with_context};
-pub use text::{evidence_text, system_prompt};
+pub use planning::{AiPlan, PreparedAi, prepare_stream_with_context, prepare_with_context};
+pub use text::{evidence_text, system_prompt, system_prompt_for_scenes};
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -196,7 +196,7 @@ pub fn evidence_value(record: &Record, include_payload: bool) -> Value {
     }
     v
 }
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct TextEvidence {
     id: String,
     text: String,
@@ -399,7 +399,8 @@ pub fn analyze_prepared_with_context(
     let PreparedAi {
         config,
         system,
-        batches,
+        mut batches,
+        spool,
         plan,
         include_payload,
     } = prepared;
@@ -408,7 +409,7 @@ pub fn analyze_prepared_with_context(
         .timeout(Duration::from_secs(config.timeout_seconds))
         .redirect(Policy::none())
         .build()?;
-    let count = batches.len();
+    let count = plan.evidence_batches;
     let mut run = AiRun {
         model: config.model.clone(),
         endpoint: config.endpoint()?.to_string(),
@@ -426,10 +427,15 @@ pub fn analyze_prepared_with_context(
     let mut failed_evidence = vec![];
     let mut neutral_count = 0;
     let mut neutral_preview = vec![];
-    for (i, batch) in batches.into_iter().enumerate() {
+    for i in 0..count {
         if ctx.cancellation.is_cancelled() {
             break;
         }
+        let batch = if let Some(spool) = &spool {
+            spool.batch(i)?
+        } else {
+            std::mem::take(batches.get_mut(i).context("AI 批次计划不一致")?)
+        };
         let user = format!(
             "当前批次 batch: {}\n总证据批次 total_batches: {}\n当前批次记录数: {}\n包含网络原始包及载荷: {}\n\n{}",
             i + 1,

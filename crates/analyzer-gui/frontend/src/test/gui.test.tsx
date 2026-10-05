@@ -407,6 +407,7 @@ describe("Windows UAC collection", () => {
       if (command === "request_elevation") return "cancelled";
     });
     render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "导入分析" }));
     const button = await screen.findByRole("button", {
       name: "以管理员身份启动",
     });
@@ -433,6 +434,7 @@ describe("Windows UAC collection", () => {
       if (command === "request_elevation") return "launched";
     });
     render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "导入分析" }));
     fireEvent.click(
       await screen.findByRole("button", { name: "以管理员身份启动" }),
     );
@@ -448,6 +450,7 @@ describe("Windows UAC collection", () => {
       if (command === "get_view") return response(args.request);
     });
     render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "导入分析" }));
     await screen.findByText("管理员权限");
     expect(
       screen.queryByRole("button", { name: "以管理员身份启动" }),
@@ -468,6 +471,7 @@ describe("Windows UAC collection", () => {
       if (command === "request_elevation") throw "模拟启动失败";
     });
     render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "导入分析" }));
     const button = await screen.findByRole("button", {
       name: "以管理员身份启动",
     });
@@ -487,9 +491,13 @@ it("normal startup has no evidence, imports or automatic AI requests", async () 
       : undefined,
   );
   render(<App />);
-  await screen.findByText("汇集离线证据，开始本地分析");
+  await screen.findByText("每次应急响应独立保存，继续已有项目或新建项目");
   await waitFor(() => expect(mock.window.onDragDropEvent).toHaveBeenCalled());
-  expect(mock.invoke.mock.calls.map((v) => v[0])).toEqual(["initialize"]);
+  expect(
+    mock.invoke.mock.calls.some(([v]) =>
+      ["start_import", "start_ai"].includes(v),
+    ),
+  ).toBe(false);
   expect(screen.getByRole("button", { name: "导出报告" })).toBeDisabled();
 });
 it("renders every table field, preserves backend total and requests next offset", () => {
@@ -600,7 +608,11 @@ it("native dropped files populate the pending list without importing or sending 
   expect(screen.getAllByText("中文证据.log")).toHaveLength(1);
   expect(screen.getByText("network.pcapng")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "开始本地分析" })).toBeEnabled();
-  expect(mock.invoke.mock.calls.map((v) => v[0])).toEqual(["initialize"]);
+  expect(
+    mock.invoke.mock.calls.some(([v]) =>
+      ["start_import", "start_ai"].includes(v),
+    ),
+  ).toBe(false);
 });
 it("AI starts only explicitly and raw payload is opt-in", async () => {
   render(<App />);
@@ -1014,4 +1026,105 @@ it("invalid AI filter keeps the previous selection and Chinese composition does 
       request: expect.objectContaining({ scope: "matches", selection_id: 11 }),
     }),
   );
+});
+
+function dirtyProjectBoot(): Bootstrap {
+  return {
+    ...boot,
+    project: {
+      info: {
+        id: "synthetic-project-id",
+        name: "客户甲响应",
+        client: "客户甲",
+        response_start: "2026-10-05T09:00:00+08:00",
+        response_end: null,
+        location: "",
+        responders: "",
+        description: "",
+        created_at: "2026-10-05T09:00:00+08:00",
+        updated_at: "2026-10-05T09:00:00+08:00",
+      },
+      path: "/tmp/synthetic.eair",
+      dirty: true,
+      revision: 2,
+    },
+  };
+}
+it("protects dirty projects when switching and waits for a successful save", async () => {
+  const original = mock.invoke.getMockImplementation()!;
+  let fresh = dirtyProjectBoot();
+  const job = {
+    task_id: 123,
+    session_id: 7,
+    epoch: 0,
+    revision: 2,
+    kind: "project_save",
+    status: "running",
+    label: "保存项目",
+    stage: null,
+    completed: null,
+    total: null,
+    error: null,
+    saved_paths: [],
+  };
+  mock.invoke.mockImplementation((cmd, args) =>
+    cmd === "initialize"
+      ? Promise.resolve(structuredClone(fresh))
+      : cmd === "project_save"
+        ? Promise.resolve(job)
+        : original(cmd, args),
+  );
+  render(<App />);
+  await waitFor(() => expect(mock.window.onCloseRequested).toHaveBeenCalled());
+  fireEvent.click(screen.getAllByRole("button", { name: "新建项目" })[0]);
+  await screen.findByText("项目有未保存的修改");
+  fireEvent.click(screen.getByRole("button", { name: "保存并继续" }));
+  await waitFor(() =>
+    expect(mock.invoke).toHaveBeenCalledWith("project_save", {
+      sessionId: 7,
+      path: "/tmp/synthetic.eair",
+      overwrite: false,
+    }),
+  );
+  expect(screen.queryByText("新建应急响应项目")).not.toBeInTheDocument();
+  const listener = mock.event.mock.calls.find(
+    ([name]) => name === "analysis-task",
+  )![1];
+  await act(async () =>
+    listener({ payload: { ...job, status: "failed", error: "合成保存失败" } }),
+  );
+  expect(screen.getByText("项目有未保存的修改")).toBeInTheDocument();
+  expect(screen.queryByText("新建应急响应项目")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "保存并继续" }));
+  fresh = { ...fresh, project: { ...fresh.project!, dirty: false } };
+  await act(async () =>
+    listener({
+      payload: {
+        ...job,
+        task_id: 124,
+        status: "completed",
+        saved_paths: ["/tmp/synthetic.eair"],
+      },
+    }),
+  );
+  await screen.findByText("新建应急响应项目");
+});
+it("prevents closing a dirty project until the user resolves unsaved changes", async () => {
+  const original = mock.invoke.getMockImplementation()!;
+  mock.invoke.mockImplementation((cmd, args) =>
+    cmd === "initialize"
+      ? Promise.resolve(dirtyProjectBoot())
+      : original(cmd, args),
+  );
+  render(<App />);
+  await waitFor(() => expect(mock.window.onCloseRequested).toHaveBeenCalled());
+  const event = { preventDefault: vi.fn() };
+  await act(async () =>
+    mock.window.onCloseRequested.mock.calls.at(-1)![0](event),
+  );
+  expect(event.preventDefault).toHaveBeenCalled();
+  await screen.findByText("项目有未保存的修改");
+  expect(mock.window.destroy).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "放弃修改并继续" }));
+  await waitFor(() => expect(mock.window.destroy).toHaveBeenCalledTimes(1));
 });

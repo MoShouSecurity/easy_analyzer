@@ -42,3 +42,10 @@ btmp
 *.tsbuildinfo
 
 **/__pycache__/
+
+# Private response projects and project catalogs.
+*.eair
+*.eair-journal
+*.eair-wal
+*.eair-shm
+projects.sqlite*

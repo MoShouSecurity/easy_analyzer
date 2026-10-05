@@ -66,6 +66,11 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// 应急响应项目：创建、续办、追加证据与备注
+    Project {
+        #[command(subcommand)]
+        command: ProjectCommand,
+    },
     /// 混合分析：自动识别日志、进程快照和 PCAP 文件
     #[command(after_help = "示例：
   easy-analyzer analyze cases/Security.evtx cases/wtmp cases/processes.json cases/capture.pcap
@@ -125,10 +130,74 @@ AI 默认只接收包摘要；--include-payload 额外发送原始包与载荷�
 自定义配置路径：easy-analyzer -c settings.toml config init
 所有平台默认：当前工作目录的 config.toml（运行命令时所在的目录）
 其他 AI 服务可修改 base_url、model 和 api_key。
-config check 会发送一个不含案件证据的小请求，可能产生服务费用。")]
+config check 会发送一个不含项目证据的小请求，可能产生服务费用。")]
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
+    },
+}
+
+#[derive(Args)]
+pub struct ProjectMetadata {
+    #[arg(long)]
+    pub name: Option<String>,
+    #[arg(long)]
+    pub client: Option<String>,
+    #[arg(long)]
+    pub response_start: Option<String>,
+    #[arg(long)]
+    pub response_end: Option<String>,
+    #[arg(long)]
+    pub location: Option<String>,
+    #[arg(long)]
+    pub responders: Option<String>,
+    #[arg(long)]
+    pub description: Option<String>,
+}
+#[derive(Subcommand)]
+pub enum ProjectCommand {
+    /// 创建并保存空项目，名称和客户单位必填
+    Create {
+        path: PathBuf,
+        #[command(flatten)]
+        info: ProjectMetadata,
+    },
+    /// 打开已有项目，不重新解析或自动发送 AI
+    Open {
+        path: PathBuf,
+        #[command(flatten)]
+        common: CommonArgs,
+    },
+    /// 搜索本机最近打开的项目
+    List {
+        #[arg(long, default_value = "")]
+        search: String,
+        #[arg(long, default_value = "")]
+        client: String,
+        #[arg(long)]
+        from: Option<String>,
+        #[arg(long)]
+        until: Option<String>,
+    },
+    /// 向项目追加证据，保存回项目文件
+    Import {
+        path: PathBuf,
+        #[command(flatten)]
+        args: AnalyzeArgs,
+    },
+    /// 修改基本资料，保存回项目文件
+    Edit {
+        path: PathBuf,
+        #[command(flatten)]
+        info: ProjectMetadata,
+    },
+    /// 写入或读取证据备注；空字符串删除备注
+    Note {
+        path: PathBuf,
+        #[arg(long)]
+        record: String,
+        #[arg(long)]
+        text: Option<String>,
     },
 }
 
@@ -158,6 +227,31 @@ pub enum AiScope {
 #[derive(Args)]
 #[command(group(ArgGroup::new("selection").args(["query", "suspicious"]).multiple(true)))]
 pub struct CommonArgs {
+    #[arg(long, value_name = "PATH", help = "打开应急响应项目，并追加本次证据")]
+    pub project: Option<PathBuf>,
+    #[arg(long, value_name = "PATH", help = "手动保存项目为 .eair 文件")]
+    pub save_project: Option<PathBuf>,
+    #[arg(long, help = "新项目名称；保存新项目时必填")]
+    pub project_name: Option<String>,
+    #[arg(long, help = "客户单位；保存新项目时必填")]
+    pub client: Option<String>,
+    #[arg(long, help = "响应开始时间，RFC3339 格式，包含时区")]
+    pub response_start: Option<String>,
+    #[arg(long, action=ArgAction::Append, value_name="FILE", help="追加 TXT/CSV IOC 文件，可重复")]
+    pub ioc: Vec<PathBuf>,
+    #[arg(long, action=ArgAction::Append, value_name="VALUE", help="手动添加 IOC，可重复")]
+    pub ioc_value: Vec<String>,
+    #[arg(long, help = "从标准输入读取 IOC 清单，与证据标准输入互斥")]
+    pub ioc_stdin: bool,
+    #[arg(
+        long,
+        requires = "ioc_stdin",
+        help = "标准输入 IOC 使用 type,value,note CSV"
+    )]
+    pub ioc_stdin_csv: bool,
+    #[arg(long, help = "域名只匹配本身，不包含子域名")]
+    pub ioc_exact_domain: bool,
+
     #[arg(
         long,
         value_name = "TEXT",
@@ -292,7 +386,7 @@ pub struct LogLoadingArgs {
 }
 
 #[derive(Args)]
-#[command(group(ArgGroup::new("source").args(["files", "auto_load", "live_processes"]).required(true).multiple(true)))]
+#[command(group(ArgGroup::new("source").args(["files", "auto_load", "live_processes", "project"]).required(true).multiple(true)))]
 pub struct AnalyzeArgs {
     #[arg(
         value_name = "FILES",
@@ -320,7 +414,7 @@ pub struct AnalyzeArgs {
 }
 
 #[derive(Args)]
-#[command(group(ArgGroup::new("source").args(["files", "auto_load"]).required(true).multiple(true)))]
+#[command(group(ArgGroup::new("source").args(["files", "auto_load", "project"]).required(true).multiple(true)))]
 pub struct LogArgs {
     #[arg(
         value_name = "FILES",
@@ -472,6 +566,17 @@ pub fn command() -> clap::Command {
 
 /// Shared execution options; presentation stays specific to each subcommand.
 pub struct AnalysisArgs {
+    pub project: Option<PathBuf>,
+    pub save_project: Option<PathBuf>,
+    pub project_name: Option<String>,
+    pub client: Option<String>,
+    pub response_start: Option<String>,
+    pub ioc: Vec<PathBuf>,
+    pub ioc_value: Vec<String>,
+    pub ioc_stdin: bool,
+    pub ioc_stdin_csv: bool,
+    pub ioc_exact_domain: bool,
+
     pub files: Vec<PathBuf>,
     pub format: InputFormat,
     pub web_format: Option<String>,
@@ -496,8 +601,18 @@ pub struct AnalysisArgs {
     pub max_records: usize,
 }
 impl AnalysisArgs {
-    fn new(files: Vec<PathBuf>, a: CommonArgs) -> Self {
+    pub fn new(files: Vec<PathBuf>, a: CommonArgs) -> Self {
         Self {
+            project: a.project,
+            save_project: a.save_project,
+            project_name: a.project_name,
+            client: a.client,
+            response_start: a.response_start,
+            ioc: a.ioc,
+            ioc_value: a.ioc_value,
+            ioc_stdin: a.ioc_stdin,
+            ioc_stdin_csv: a.ioc_stdin_csv,
+            ioc_exact_domain: a.ioc_exact_domain,
             files,
             format: InputFormat::Auto,
             web_format: None,

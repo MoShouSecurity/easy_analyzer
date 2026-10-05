@@ -5,6 +5,8 @@ Rust 开发的应急响应分析工具，提供 CLI 和桌面 GUI，用于日志
 - **日志**：Windows EVTX、Linux 登录/SSH 日志、Apache/Nginx 日志，支持本地规则、关键词和正则筛选。
 - **进程与流量**：采集本机进程或导入快照，查看进程树；导入 PCAP/PCAPNG，分析网络会话及 HTTP/DNS/TLS 元数据。
 - **AI 与报告**：接入 OpenAI 兼容服务，按证据范围分析；导出包含完整证据的 HTML/JSON 报告。
+- **应急响应项目**：每次响应独立保存为 `.eair`，记录客户单位、响应时间及服务资料，多天追加证据、保留 AI 历史和备注。
+- **IOC 匹配**：文件、粘贴及手动输入 IPv4/IPv6、域名、HTTP/HTTPS URL，离线扫描项目，查看命中位置并跳转证据。
 
 ## CLI
 
@@ -22,6 +24,16 @@ Rust 开发的应急响应分析工具，提供 CLI 和桌面 GUI，用于日志
 
 # 查看完整命令与参数
 ./easy-analyzer -h
+
+# 新建项目并追加证据，手动保存
+./easy-analyzer project create response.eair --name "客户甲应急响应" --client "客户甲"
+./easy-analyzer project import response.eair host-a/auth.log capture.pcap --ioc indicators.csv
+./easy-analyzer project open response.eair -H reports/response.html
+./easy-analyzer project list --search "客户甲"
+
+# 直接分析并保存新项目；IOC 参数可以重复
+./easy-analyzer analyze auth.log --save-project response-new.eair \
+  --name "客户乙应急响应" --client "客户乙" --ioc-value example.com --ioc indicators.txt
 ```
 
 启用 AI 时，先运行 `./easy-analyzer config init`，在 `config.toml` 中填写服务地址、模型和密钥，再添加 `-a`；`-S suspicious` 可限定为本地可疑项。
@@ -31,11 +43,15 @@ Rust 开发的应急响应分析工具，提供 CLI 和桌面 GUI，用于日志
 基于 Tauri 2、React 和 TypeScript，提供浅色/深色主题。
 
 - 拖入或选择文件，在概览、日志、进程和网络页面浏览分析结果。
+- 首页搜索、继续或新建应急响应项目；工作台显示项目与客户，支持手动保存、另存为及未保存提示。
+- 向当前项目追加证据，在详情中保存备注；IOC 清单支持混合追加、说明编辑和主动扫描。
 - 全集合筛选、分页查看和证据引用跳转，按需展开原始记录。
 - AI 发送前预览范围和预算，支持后台分析、进度展示和取消。
 - 在设置页管理 AI 配置，一键导出完整报告。
 
-默认在本地分析；AI 仅在主动启用后发送证据，数据不会自动脱敏。PCAP 默认发送解析摘要，原始包与载荷需额外选择。GUI 会话保存在内存中，需要保留时请导出报告。
+默认在本地分析；AI 仅在主动启用后发送证据，数据不会自动脱敏。PCAP 默认发送解析摘要，原始包与载荷需额外选择。项目使用内置 SQLite，操作位于私有工作数据库，手动保存生成独立 `.eair` 快照；文件移至另一台机器后可直接续办，无需原始输入或数据库服务。项目目录只保存资料和路径，不汇总客户证据。项目不保存 AI 密钥。
+
+TXT 每行一个 IOC；CSV 使用 `type,value` 和可选 `note`（类型为 `ip`、`domain`、`url`）。域名默认包含子域名，CLI 用 `--ioc-exact-domain` 切换精确匹配；URL 忽略片段，保留路径和查询差异。追加证据后保留旧命中并提示尚未扫描；取消扫描保留有效命中及覆盖范围。IOC 命中作为待核查线索，不代表确认入侵。完整项目资料、备注和清单保存在数据库中；HTML 显示项目抬头，JSON 沿用原报告 schema。详细格式及性能见 [项目说明](docs/PROJECTS.md)。
 
 ## 架构
 
@@ -70,7 +86,7 @@ Windows GUI 需要 WebView2，Linux GUI 需要 GTK 3 / WebKitGTK 4.1；macOS CLI
 
 ```sh
 # CLI
-cargo build --release --locked -p analyzer-cli
+cargo build --release --locked -p easy-analyzer
 
 # GUI
 npm --prefix crates/analyzer-gui/frontend ci

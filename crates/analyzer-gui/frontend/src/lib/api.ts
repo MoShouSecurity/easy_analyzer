@@ -1,6 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   Bootstrap,
+  ProjectInfo,
+  ProjectStatus,
+  ProjectEntry,
+  IocInput,
+  IocImport,
+  IocView,
+  Screen,
+  Filters,
   ViewRequest,
   ViewResponse,
   DetailResponse,
@@ -14,6 +22,34 @@ import type {
   AiPreview,
 } from "../types";
 export const api = {
+  projects: (search: {
+    text: string;
+    client: string;
+    from: string | null;
+    until: string | null;
+  }) => invoke<ProjectEntry[]>("project_list", { search }),
+  createProject: (info: ProjectInfo) =>
+    invoke<TaskMessage>("project_create", { info }),
+  openProject: (path: string) => invoke<TaskMessage>("project_open", { path }),
+  saveProject: (sessionId: number, path: string, overwrite: boolean) =>
+    invoke<TaskMessage>("project_save", { sessionId, path, overwrite }),
+  editProject: (sessionId: number, info: ProjectInfo) =>
+    invoke<ProjectStatus>("project_edit", { sessionId, info }),
+  note: (sessionId: number, record: string, text: string) =>
+    invoke<ProjectStatus>("project_note", { sessionId, record, text }),
+  projectFilters: (sessionId: number, filters: Record<Screen, Filters>) =>
+    invoke<ProjectStatus>("project_filters", { sessionId, filters }),
+  importIoc: (sessionId: number, input: IocInput) =>
+    invoke<IocImport>("import_ioc", { sessionId, input }),
+  ioc: (sessionId: number, offset: number, hitOffset: number) =>
+    invoke<IocView>("get_ioc", { sessionId, offset, hitOffset }),
+  iocNote: (sessionId: number, id: string, note: string) =>
+    invoke<ProjectStatus>("ioc_note", { sessionId, id, note }),
+  scanIoc: (sessionId: number, includeSubdomains: boolean) =>
+    invoke<TaskMessage>("start_ioc_scan", { sessionId, includeSubdomains }),
+
+  findingRefs: (sessionId: number, id: string, offset: number) =>
+    invoke<Page<string>>("finding_references", { sessionId, id, offset }),
   initialize: () => invoke<Bootstrap>("initialize"),
   elevate: () =>
     invoke<"launched" | "cancelled" | "already_elevated">("request_elevation"),

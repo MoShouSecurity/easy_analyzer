@@ -21,8 +21,11 @@
 //! ```
 pub mod config;
 pub mod export;
+pub mod ioc;
+pub mod project;
 mod service;
 mod session;
+mod storage;
 pub mod task;
 mod types;
 mod view;
@@ -34,8 +37,12 @@ pub use analyzer_core::{
 };
 pub use config::ConfigService;
 pub use export::{ExportPlan, ExportResult, OutputFormat, RenderOptions};
+pub use ioc::*;
+pub use project::*;
 pub use service::{AnalysisService, PreparedAiAnalysis};
 pub use session::{AnalysisSession, Page, RecordSelection, RecordSummary};
 pub use task::{TaskEvent, TaskHandle, TaskId};
 pub use types::*;
 pub use view::*;
+
+mod report_cursor;

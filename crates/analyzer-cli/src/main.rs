@@ -1,6 +1,7 @@
 mod cli;
 mod diagnostics;
 mod progress;
+mod projects;
 
 use analyzer_app::{
     AnalysisInput, AnalysisMode, AnalysisRequest, AnalysisService, CancellationToken,
@@ -46,6 +47,16 @@ fn read_stdin(limit: u64, ctx: &ExecutionContext) -> Result<Vec<u8>> {
 fn run(cli: Cli, cancellation: CancellationToken) -> Result<bool> {
     let config_path = cli.config.unwrap_or_else(ConfigService::default_path);
     let (args, mode) = match cli.command {
+        Command::Project { command } => {
+            match projects::command(
+                command,
+                &config_path,
+                &ExecutionContext::new(cancellation.clone(), |_| {}),
+            )? {
+                Some(args) => (args, AnalysisMode::Mixed),
+                None => return Ok(true),
+            }
+        }
         Command::Analyze(a) => (AnalysisArgs::from(a), AnalysisMode::Mixed),
         Command::Logs(a) => (AnalysisArgs::from(a), AnalysisMode::Logs),
         Command::Processes(a) => (AnalysisArgs::from(a), AnalysisMode::Processes),
@@ -79,6 +90,38 @@ fn run(cli: Cli, cancellation: CancellationToken) -> Result<bool> {
     if args.files.iter().filter(|p| p.as_os_str() == "-").count() > 1 {
         bail!("标准输入（-）只能指定一次");
     }
+    if args.ioc_stdin && args.files.iter().any(|p| p.as_os_str() == "-") {
+        bail!("IOC 和证据不能同时使用标准输入");
+    }
+    let has_ioc = !args.ioc.is_empty() || !args.ioc_value.is_empty() || args.ioc_stdin;
+    let project_session = if let Some(path) = &args.project {
+        let session = analyzer_app::ProjectService::open(
+            path,
+            &ExecutionContext::new(cancellation.clone(), |_| {}),
+        )?;
+        projects::catalog()?.register(&session)?;
+        Some(session)
+    } else if args.save_project.is_some() || has_ioc {
+        let name = if args.save_project.is_some() {
+            args.project_name
+                .as_deref()
+                .context("保存新项目需要 --project-name")?
+        } else {
+            "临时分析"
+        };
+        let client = if args.save_project.is_some() {
+            args.client.as_deref().context("保存新项目需要 --client")?
+        } else {
+            "临时会话"
+        };
+        let mut info = analyzer_app::ProjectInfo::new(name, client);
+        if let Some(start) = &args.response_start {
+            info.response_start = start.clone();
+        }
+        Some(analyzer_app::ProjectService::create(info)?)
+    } else {
+        None
+    };
     let mut request = AnalysisRequest {
         mode,
         inputs: args
@@ -139,8 +182,34 @@ fn run(cli: Cli, cancellation: CancellationToken) -> Result<bool> {
             tree: args.tree || mode == AnalysisMode::Processes,
         },
     };
-    AnalysisService::validate(&request)?;
+    if !request.inputs.is_empty()
+        || request.auto_load
+        || request.live_processes
+        || project_session.is_none()
+    {
+        AnalysisService::validate(&request)?;
+    }
     export.validate_inputs(&request, &config_path)?;
+    let mut protected = args.ioc.clone();
+    protected.extend(args.project.iter().cloned());
+    export.validate_additional_inputs(&protected, &config_path)?;
+    if let Some(session) = &project_session {
+        export.validate_session(session, &config_path)?;
+    }
+    if let Some(save) = &args.save_project {
+        if let Some(session) = &project_session {
+            analyzer_app::ProjectService::validate_target(session, save, &config_path)?;
+        }
+        let mut outputs = vec![save.clone()];
+        outputs.extend(
+            [&export.path, &export.json_path, &export.html_path]
+                .into_iter()
+                .flatten()
+                .cloned(),
+        );
+        analyzer_app::export::validate_output_paths(&outputs, &args.ioc)?;
+    }
+
     let animation: Arc<Mutex<Option<progress::AiProgress>>> = Arc::new(Mutex::new(None));
     let observer = animation.clone();
     let ctx = ExecutionContext::new(cancellation, move |event| {
@@ -163,15 +232,100 @@ fn run(cli: Cli, cancellation: CancellationToken) -> Result<bool> {
             *bytes = read_stdin(max_file_bytes, &ctx)?.into();
         }
     }
-    let outcome = AnalysisService::execute(&request, &ctx)?;
+    let outcome = if let Some(session) = project_session {
+        let mut outcome = analyzer_app::AnalysisOutcome {
+            session: session.clone(),
+            status: TaskStatus::Completed,
+        };
+        if !request.inputs.is_empty() || request.auto_load || request.live_processes {
+            outcome = analyzer_app::ProjectService::append(&session, &request, &ctx)?;
+        }
+        let mut sources: Vec<analyzer_app::IocSource> = args
+            .ioc
+            .iter()
+            .cloned()
+            .map(analyzer_app::IocSource::File)
+            .collect();
+        sources.extend(
+            args.ioc_value
+                .iter()
+                .map(|value| analyzer_app::IocSource::Value {
+                    value: value.clone(),
+                    kind: None,
+                    note: String::new(),
+                }),
+        );
+        if args.ioc_stdin {
+            sources.push(analyzer_app::IocSource::Text {
+                text: String::from_utf8(read_stdin(64 * 1024 * 1024, &ctx)?)?,
+                csv: args.ioc_stdin_csv,
+                origin: "stdin".into(),
+            });
+        }
+        if !sources.is_empty() {
+            let imported = analyzer_app::IocService::import(&session, &sources, &ctx)?;
+            for issue in imported.issues {
+                eprintln!("IOC 第 {} 行：{}", issue.line, issue.message);
+            }
+        }
+        if has_ioc {
+            let run = analyzer_app::IocService::scan(&session, !args.ioc_exact_domain, &ctx)?;
+            if !run.complete {
+                outcome.status = TaskStatus::Cancelled;
+            }
+        }
+        let query = request
+            .query
+            .clone()
+            .or(analyzer_app::ProjectService::query_options(&session)?);
+        if let Some(query) = &query {
+            let selection = session.query(query, &ctx)?;
+            session.set_selection(Some(&selection), &ctx)?;
+            analyzer_app::ProjectService::save_query_options(&session, query)?;
+        }
+        if let Some(ai) = &request.ai
+            && !ctx.cancellation.is_cancelled()
+        {
+            outcome = AnalysisService::analyze_ai(&session, ai, None, &ctx)?;
+        }
+        if let Some(path) = &args.save_project {
+            let save_ctx = if ctx.cancellation.is_cancelled() {
+                ExecutionContext::default()
+            } else {
+                ctx.clone()
+            };
+            analyzer_app::ProjectService::save(&session, path, &config_path, false, &save_ctx)?;
+            projects::catalog()?.register(&session)?;
+            eprintln!("项目已保存：{}", path.display());
+        }
+        outcome
+    } else {
+        AnalysisService::execute(&request, &ctx)?
+    };
     if let Some(animation) = animation.lock().unwrap_or_else(|e| e.into_inner()).take() {
         let complete = outcome.status != TaskStatus::Cancelled
             && outcome
                 .session
-                .with_report(|r| r.ai_runs.last().is_some_and(|run| run.is_complete()))?;
+                .ai_run_headers()?
+                .last()
+                .is_some_and(|run| run.is_complete());
         animation.finish(complete);
     }
-    let exported = export.save(&outcome.session, &config_path)?;
+    // Project JSON output goes directly to stdout; never allocate the complete report string.
+    let direct_stdout = outcome.session.is_project()
+        && export.path.is_none()
+        && export.format != OutputFormat::Html;
+    let exported = if direct_stdout {
+        let saved = export.save_artifacts(&outcome.session, &config_path)?;
+        export.write_primary(
+            &outcome.session,
+            &mut io::stdout().lock(),
+            &ExecutionContext::default(),
+        )?;
+        saved
+    } else {
+        export.save(&outcome.session, &config_path)?
+    };
     for path in &exported.saved_paths {
         eprintln!("报告已保存：{}", path.display());
     }
@@ -186,32 +340,17 @@ fn run(cli: Cli, cancellation: CancellationToken) -> Result<bool> {
             eprintln!("分析部分完成，错误原因见上方诊断。");
         } else {
             eprintln!("分析部分完成，具体原因：");
-            outcome.session.with_report(|report| {
-                let errors: Vec<_> = report
-                    .diagnostics
-                    .iter()
-                    .filter(|d| d.level == DiagnosticLevel::Error)
-                    .collect();
-                let shown = if args.limit == 0 {
-                    errors.len()
-                } else {
-                    errors.len().min(args.limit)
-                };
-                for diagnostic in errors.iter().take(shown) {
-                    let position = diagnostic
-                        .position
-                        .as_ref()
-                        .map(|p| format!("/{p}"))
-                        .unwrap_or_default();
-                    eprintln!(
-                        "  {}{}：{}",
-                        diagnostic.source, position, diagnostic.message
-                    );
-                }
-                if errors.len() > shown || errors.is_empty() {
-                    eprintln!("完整原因见报告中的诊断信息。");
-                }
-            })?;
+            let diagnostics = outcome
+                .session
+                .diagnostic_page(0, args.limit.clamp(1, 1000))?;
+            for diagnostic in diagnostics
+                .items
+                .iter()
+                .filter(|d| d.level == DiagnosticLevel::Error)
+            {
+                eprintln!("  {}：{}", diagnostic.source, diagnostic.message);
+            }
+            eprintln!("完整原因见报告中的诊断信息。");
         }
     }
     Ok(success)

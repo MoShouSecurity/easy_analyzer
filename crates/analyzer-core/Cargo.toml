@@ -17,6 +17,8 @@ sysinfo.workspace = true
 reqwest.workspace = true
 toml.workspace = true
 tempfile.workspace = true
+csv = "1.4.0"
+url = "2.5.8"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }

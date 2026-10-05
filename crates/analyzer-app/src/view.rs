@@ -104,6 +104,9 @@ impl AnalysisSession {
         filter: &RecordFilter,
         ctx: &ExecutionContext,
     ) -> Result<RecordSelection> {
+        if let Some(db) = &self.0.store {
+            return db.select(self.id(), filter, ctx);
+        }
         let selection = self.query(&filter.query, ctx)?;
         self.with_report(|r| {
             let mut ids = Vec::new();
@@ -142,6 +145,9 @@ impl AnalysisSession {
         })?
     }
     pub fn overview(&self, ctx: &ExecutionContext) -> Result<SessionOverview> {
+        if let Some(db) = &self.0.store {
+            return db.overview(ctx);
+        }
         self.with_report(|r| {
             let mut o = SessionOverview {
                 sources: r.sources.len(),
@@ -192,6 +198,10 @@ impl AnalysisSession {
         limit: usize,
         ctx: &ExecutionContext,
     ) -> Result<Page<Finding>> {
+        if let Some(db) = &self.0.store {
+            ctx.check()?;
+            return db.finding_page(filter, offset, limit);
+        }
         self.with_report(|r| {
             if !(1..=1000).contains(&limit) {
                 bail!("分页大小必须为 1 到 1000");
@@ -224,6 +234,27 @@ impl AnalysisSession {
         selection: Option<&RecordSelection>,
         id: &str,
     ) -> Result<Option<usize>> {
+        if let Some(db) = &self.0.store {
+            if let Some(s) = selection {
+                self.validate_selection(s)?;
+            }
+            let c = db.lock()?;
+            use rusqlite::OptionalExtension;
+            let position = if let Some(key) = selection.and_then(RecordSelection::stored_id) {
+                c.query_row(
+                    "SELECT ordinal FROM selection_refs WHERE selection_id=?1 AND record_id=?2",
+                    rusqlite::params![key, id],
+                    |r| r.get::<_, i64>(0).map(|n| n as usize),
+                )
+                .optional()?
+            } else {
+                c.query_row("SELECT ordinal-1 FROM records WHERE id=?1", [id], |r| {
+                    r.get::<_, i64>(0).map(|n| n as usize)
+                })
+                .optional()?
+            };
+            return Ok(position);
+        }
         if let Some(s) = selection {
             self.validate_selection(s)?;
             return Ok(s.ids().iter().position(|candidate| candidate == id));
@@ -231,18 +262,45 @@ impl AnalysisSession {
         Ok(self.0.index.get(id).copied())
     }
     pub fn source(&self, id: &str) -> Result<Option<Source>> {
+        if let Some(db) = &self.0.store {
+            let c = db.lock()?;
+            let items: Vec<Source> =
+                crate::storage::values(&c, "SELECT json FROM sources WHERE id=?1", [id])?;
+            return Ok(items.into_iter().next());
+        }
         self.with_report(|r| r.sources.iter().find(|s| s.id == id).cloned())
     }
     pub fn source_page(&self, offset: usize, limit: usize) -> Result<Page<Source>> {
+        if let Some(db) = &self.0.store {
+            return db.source_page(offset, limit);
+        }
         self.with_report(|r| page_slice(&r.sources, offset, limit))?
     }
     pub fn diagnostic_page(&self, offset: usize, limit: usize) -> Result<Page<Diagnostic>> {
+        if let Some(db) = &self.0.store {
+            return db.diagnostic_page(offset, limit);
+        }
         self.with_report(|r| page_slice(&r.diagnostics, offset, limit))?
     }
     pub fn ai_runs(&self) -> Result<Vec<AiRun>> {
+        if let Some(db) = &self.0.store {
+            return crate::storage::Database::ai(&*db.lock()?);
+        }
         self.with_report(|r| r.ai_runs.clone())
     }
     pub fn related_findings(&self, id: &str) -> Result<Vec<Finding>> {
+        if let Some(db) = &self.0.store {
+            let c = db.lock()?;
+            let rows: Vec<Finding> = crate::storage::values(
+                &c,
+                "SELECT f.json FROM findings f JOIN finding_refs e ON e.finding_id=f.id WHERE e.record_id=?1 ORDER BY f.severity DESC",
+                [id],
+            )?;
+            return rows
+                .into_iter()
+                .map(|f| crate::storage::Database::finding(&c, crate::storage::json(&f)?))
+                .collect();
+        }
         self.with_report(|r| {
             r.findings
                 .iter()
@@ -260,6 +318,14 @@ impl AnalysisSession {
     ) -> Result<Page<FlowSummary>> {
         if let Some(s) = selection {
             self.validate_selection(s)?;
+        }
+        if let Some(db) = &self.0.store {
+            ctx.check()?;
+            return db.flow_page(
+                selection.and_then(RecordSelection::stored_id),
+                offset,
+                limit,
+            );
         }
         let selected = selection.map(|s| s.ids().iter().collect::<HashSet<_>>());
         self.with_report(|r| {
@@ -306,6 +372,14 @@ impl AnalysisSession {
         if let Some(s) = selection {
             self.validate_selection(s)?;
         }
+        if let Some(db) = &self.0.store {
+            return db.flow_selection(
+                self.id(),
+                key,
+                selection.and_then(RecordSelection::stored_id),
+                ctx,
+            );
+        }
         let selected = selection.map(|s| s.ids().iter().collect::<HashSet<_>>());
         self.with_report(|r| {
             let f = r
@@ -329,9 +403,19 @@ impl AnalysisSession {
         ctx: &ExecutionContext,
     ) -> Result<Vec<ProcessRow>> {
         self.validate_selection(selection)?;
-        let forest =
-            self.with_report(|r| core::process::process_forest_with_context(&r.records, ctx))??;
-        let selected = selection.ids().iter().cloned().collect::<HashSet<_>>();
+        let forest = if let Some(db) = &self.0.store {
+            core::process::process_forest_with_context(&db.process_records()?, ctx)?
+        } else {
+            self.with_report(|r| core::process::process_forest_with_context(&r.records, ctx))??
+        };
+        let selected = if let Some(db) = &self.0.store {
+            let c = db.lock()?;
+            let mut stmt = c.prepare("SELECT r.id FROM records r JOIN selection_refs s ON s.record_id=r.id WHERE r.kind='process' AND s.selection_id=?1")?;
+            stmt.query_map([selection.stored_id()], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<HashSet<_>>>()?
+        } else {
+            selection.ids().iter().cloned().collect::<HashSet<_>>()
+        };
         let mut rows = Vec::new();
         for tree in forest.trees {
             let nodes = tree
@@ -384,5 +468,175 @@ impl AnalysisSession {
             }
         }
         Ok(rows)
+    }
+}
+
+/// Lightweight finding for a table or inspector; full references are queried separately.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FindingPreview {
+    #[serde(flatten)]
+    pub finding: Finding,
+    pub evidence_count: usize,
+}
+impl AnalysisSession {
+    pub fn finding_references(
+        &self,
+        id: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Page<String>> {
+        crate::storage::page_limit(limit)?;
+        if let Some(db) = &self.0.store {
+            let c = db.lock()?;
+            if !c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM findings WHERE id=?1)",
+                [id],
+                |r| r.get::<_, bool>(0),
+            )? {
+                bail!("发现不属于当前项目");
+            }
+            let total = c.query_row(
+                "SELECT COUNT(*) FROM finding_refs WHERE finding_id=?1",
+                [id],
+                |r| r.get::<_, i64>(0),
+            )? as usize;
+            let mut s=c.prepare("SELECT record_id FROM finding_refs WHERE finding_id=?1 ORDER BY ordinal LIMIT ?2 OFFSET ?3")?;
+            let items = s
+                .query_map(rusqlite::params![id, limit as i64, offset as i64], |r| {
+                    r.get(0)
+                })?
+                .collect::<rusqlite::Result<_>>()?;
+            Ok(Page {
+                offset,
+                total,
+                items,
+            })
+        } else {
+            self.with_report(|r| {
+                let f = r
+                    .findings
+                    .iter()
+                    .find(|f| f.id == id)
+                    .ok_or_else(|| anyhow::anyhow!("发现不存在"))?;
+                Ok(Page {
+                    offset,
+                    total: f.evidence_ids.len(),
+                    items: f
+                        .evidence_ids
+                        .iter()
+                        .skip(offset)
+                        .take(limit)
+                        .cloned()
+                        .collect(),
+                })
+            })?
+        }
+    }
+    pub fn finding_previews(
+        &self,
+        filter: &FindingFilter,
+        offset: usize,
+        limit: usize,
+        ctx: &ExecutionContext,
+    ) -> Result<Page<FindingPreview>> {
+        crate::storage::page_limit(limit)?;
+        ctx.check()?;
+        if let Some(db) = &self.0.store {
+            let c = db.lock()?;
+            let mut where_sql = String::from("1=1");
+            let mut p = vec![];
+            if let Some(severity) = &filter.severity {
+                where_sql.push_str(" AND severity=?");
+                p.push(rusqlite::types::Value::Integer(severity.rank() as i64));
+            }
+            match filter.origin {
+                FindingOrigin::Local => where_sql.push_str(" AND origin LIKE 'local:%'"),
+                FindingOrigin::Ai => where_sql.push_str(" AND origin LIKE 'ai:%'"),
+                _ => {}
+            }
+            let total = c.query_row(
+                &format!("SELECT COUNT(*) FROM findings WHERE {where_sql}"),
+                rusqlite::params_from_iter(&p),
+                |r| r.get::<_, i64>(0),
+            )? as usize;
+            p.push((limit as i64).into());
+            p.push((offset as i64).into());
+            let headers: Vec<Finding> = crate::storage::values(
+                &c,
+                &format!(
+                    "SELECT json FROM findings WHERE {where_sql} ORDER BY severity DESC,ordinal LIMIT ? OFFSET ?"
+                ),
+                rusqlite::params_from_iter(p),
+            )?;
+            drop(c);
+            let mut items = vec![];
+            for mut finding in headers {
+                ctx.check()?;
+                let refs = self.finding_references(&finding.id, 0, 100)?;
+                finding.evidence_ids = refs.items;
+                items.push(FindingPreview {
+                    finding,
+                    evidence_count: refs.total,
+                });
+            }
+            Ok(Page {
+                offset,
+                total,
+                items,
+            })
+        } else {
+            let page = self.finding_page(filter, offset, limit, ctx)?;
+            Ok(Page {
+                offset,
+                total: page.total,
+                items: page
+                    .items
+                    .into_iter()
+                    .map(|mut finding| {
+                        let count = finding.evidence_ids.len();
+                        finding.evidence_ids.truncate(100);
+                        FindingPreview {
+                            finding,
+                            evidence_count: count,
+                        }
+                    })
+                    .collect(),
+            })
+        }
+    }
+    pub fn related_finding_previews(&self, record: &str) -> Result<Vec<FindingPreview>> {
+        if let Some(db) = &self.0.store {
+            let headers: Vec<Finding> = {
+                let c = db.lock()?;
+                crate::storage::values(
+                    &c,
+                    "SELECT f.json FROM findings f WHERE EXISTS(SELECT 1 FROM finding_refs r WHERE r.finding_id=f.id AND r.record_id=?1) ORDER BY severity DESC,ordinal LIMIT 100",
+                    [record],
+                )?
+            };
+            let mut items = vec![];
+            for mut finding in headers {
+                let refs = self.finding_references(&finding.id, 0, 100)?;
+                finding.evidence_ids = refs.items;
+                items.push(FindingPreview {
+                    finding,
+                    evidence_count: refs.total,
+                });
+            }
+            Ok(items)
+        } else {
+            Ok(self
+                .related_findings(record)?
+                .into_iter()
+                .map(|mut finding| {
+                    let count = finding.evidence_ids.len();
+                    finding.evidence_ids.truncate(100);
+                    FindingPreview {
+                        finding,
+                        evidence_count: count,
+                    }
+                })
+                .collect())
+        }
     }
 }

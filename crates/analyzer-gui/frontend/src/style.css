@@ -173,6 +173,7 @@ small {
   letter-spacing: -0.3px;
 }
 .macos .brand {
+  width: 210px;
   padding-left: 84px;
   gap: 6px;
 }
@@ -2243,4 +2244,121 @@ small {
 }
 .ai-controls .local-ai-summary {
   padding: 6px 10px;
+}
+.project-page,
+.ioc-page {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  max-width: 1300px;
+  margin: auto;
+}
+.project-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.project-search,
+.project-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.project-form .full {
+  grid-column: 1/-1;
+}
+.project-search label,
+.project-form label,
+.ioc-input > label,
+.evidence-note label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.project-page input,
+.project-form input,
+.project-form textarea,
+.ioc-page input,
+.ioc-page textarea,
+.ioc-page select,
+.evidence-note textarea {
+  background: var(--surface);
+  color: inherit;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  width: 100%;
+  min-width: 0;
+}
+.project-form textarea,
+.ioc-page textarea,
+.evidence-note textarea {
+  min-height: 100px;
+  resize: vertical;
+}
+.project-list article {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 12px;
+}
+.project-list h3 {
+  margin: 0;
+}
+.project-list small {
+  overflow-wrap: anywhere;
+}
+.project-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 12px;
+}
+.project-table th,
+.project-table td {
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+.project-table small {
+  display: block;
+  opacity: 0.7;
+}
+.ioc-input {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.ioc-manual {
+  display: grid;
+  grid-template-columns: 120px 2fr 1fr auto;
+  gap: 10px;
+}
+.ioc-pending {
+  padding: 10px;
+  border-left: 3px solid #d79d36;
+  background: #d79d3615;
+}
+.toolbar-project {
+  border: 0;
+  background: none;
+  color: inherit;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+.error-text {
+  color: #cf4d4d;
+}
+.evidence-note {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
