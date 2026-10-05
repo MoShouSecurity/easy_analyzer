@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from release_assets import APP_FILES, APP_NAME, asset_names, checksum_manifest, validate_app_bundle, validate_source, verify_app_image
+from release_assets import APP_FILES, APP_NAME, asset_names, checksum_manifest, validate_app_bundle, validate_image_contents, validate_source, verify_app_image
 
 
 class AssetsTest(unittest.TestCase):
@@ -195,6 +195,43 @@ class AppBundleTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 verify_app_image(image, self.version)
             self.assertEqual(run.call_args_list[-1].args[0][:2], ["hdiutil", "detach"])
+
+
+class InstallerContentsTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.mount = Path(self.temp.name)
+        (self.mount / APP_NAME).mkdir()
+        try:
+            (self.mount / "Applications").symlink_to("/Applications")
+        except OSError:
+            self.skipTest("This runner cannot create symlinks")
+        (self.mount / ".DS_Store").write_bytes(b"\x00\x00\x00\x01Bud1")
+        (self.mount / ".background.tiff").write_bytes(b"II*\x00" + bytes(8))
+
+    def test_installer_layout_is_allowed_but_hidden_customer_data_is_rejected(self):
+        validate_image_contents(self.mount)
+        (self.mount / ".customer.eair").write_bytes(b"private project")
+        with self.assertRaisesRegex(ValueError, "Unexpected"):
+            validate_image_contents(self.mount)
+
+    def test_layout_resources_cannot_be_missing_links_directories_or_unrelated_data(self):
+        background = self.mount / ".background.tiff"
+        background.unlink()
+        with self.assertRaisesRegex(ValueError, "Incomplete"):
+            validate_image_contents(self.mount)
+        background.mkdir()
+        with self.assertRaisesRegex(ValueError, "resource"):
+            validate_image_contents(self.mount)
+        background.rmdir()
+        background.symlink_to(self.mount / ".DS_Store")
+        with self.assertRaisesRegex(ValueError, "resource"):
+            validate_image_contents(self.mount)
+        background.unlink()
+        background.write_bytes(b"unrelated private data")
+        with self.assertRaisesRegex(ValueError, "background"):
+            validate_image_contents(self.mount)
 
 
 if __name__ == "__main__":

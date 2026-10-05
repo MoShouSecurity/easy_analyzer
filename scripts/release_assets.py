@@ -101,6 +101,32 @@ def validate_image_file(path):
             raise ValueError("Expected a macOS UDIF disk image")
 
 
+def validate_image_contents(mount):
+    # Permit only the installer artwork/layout in addition to the deliverable.
+    # Do not broaden this to arbitrary hidden files or directories.
+    layout = {".DS_Store", ".background.tiff"}
+    bookkeeping = {".Trashes", ".fseventsd", ".Spotlight-V100", ".HFS+ Private Directory Data\r", "HFS+ Private Data"}
+    names = {entry.name for entry in mount.iterdir()}
+    if names - {APP_NAME, "Applications"} - layout - bookkeeping:
+        raise ValueError("Unexpected files in macOS disk image")
+    if names & layout:
+        if not layout <= names:
+            raise ValueError("Incomplete macOS installer layout")
+        for name in layout:
+            path = mount / name
+            if path.is_symlink() or not path.is_file() or not 8 <= path.stat().st_size <= 8 * 1024 * 1024:
+                raise ValueError("Invalid macOS installer resource")
+            with path.open("rb") as source:
+                header = source.read(8)
+            if name == ".DS_Store" and header != b"\x00\x00\x00\x01Bud1":
+                raise ValueError("Invalid Finder layout")
+            if name == ".background.tiff" and header[:4] not in (b"II*\x00", b"MM\x00*"):
+                raise ValueError("Invalid Finder background")
+    applications = mount / "Applications"
+    if not applications.is_symlink() or str(applications.readlink()) != "/Applications":
+        raise ValueError("Disk image must include the Applications installation link")
+
+
 def verify_app_image(path, version):
     validate_image_file(path)
     result = subprocess.run(["hdiutil", "imageinfo", "-plist", str(path.resolve())], capture_output=True, check=True, timeout=60)
@@ -111,13 +137,7 @@ def verify_app_image(path, version):
         mount.mkdir()
         subprocess.run(["hdiutil", "attach", "-readonly", "-nobrowse", "-noautoopen", "-mountpoint", str(mount), str(path.resolve())], check=True, capture_output=True, timeout=60)
         try:
-            # macOS may add these filesystem bookkeeping directories when mounted.
-            allowed = {APP_NAME, "Applications", ".Trashes", ".fseventsd", ".Spotlight-V100", ".HFS+ Private Directory Data\r", "HFS+ Private Data"}
-            if {entry.name for entry in mount.iterdir()} - allowed:
-                raise ValueError("Unexpected files in macOS disk image")
-            applications = mount / "Applications"
-            if not applications.is_symlink() or str(applications.readlink()) != "/Applications":
-                raise ValueError("Disk image must include the Applications installation link")
+            validate_image_contents(mount)
             bundle = mount / APP_NAME
             validate_app_bundle(bundle, version)
             subprocess.run(["codesign", "--verify", "--strict", str(bundle)], check=True, timeout=30)
