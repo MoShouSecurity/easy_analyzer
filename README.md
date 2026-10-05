@@ -100,7 +100,9 @@ macOS 本地打包：CLI 使用 `bash tools/package-macos.sh`，GUI 使用 `bash
 
 GUI 的 DMG 包含品牌背景、拖拽箭头和固定图标布局，普通屏与 Retina 屏均有对应背景。打包需要 Python 3.11+ 与 Xcode 命令行工具；脚本在临时虚拟环境中安装版本及哈希固定的布局依赖，本地与 CI 共用，无需控制 Finder。
 
-Windows x64 安装包使用 `python scripts/package_gui_windows.py` 构建，需要 Node.js、Rust MSVC 工具链及 NSIS。安装到当前用户目录，提供中文/英文向导、开始菜单快捷方式及卸载入口；缺少 WebView2 时联网下载。已有 GNU 交叉构建可使用 `--target x86_64-pc-windows-gnu --bundle-only` 打包。安装包与单独校验文件保存在 `dist/`，不创建发布标签或上传 Release。
+Windows x64 安装包使用 `python scripts/package_gui_windows.py` 构建，需要 Node.js、Rust MSVC 工具链及 NSIS。安装到当前用户目录，提供中文/英文向导、开始菜单快捷方式及卸载入口；缺少 WebView2 时联网下载。已有 GNU 交叉构建可使用 `--target x86_64-pc-windows-gnu --bundle-only` 打包。安装包与单独校验文件保存在 `dist/`，本地构建命令不创建发布标签或上传 Release。
+
+`codex/incident-projects-ioc` 分支推送会自动运行三平台 CI，并在 Actions 中提供构建附件。明确发布的 `vX.Y.Z-preview.N` tag 会生成 [预览版 Release](https://github.com/MoShouSecurity/easy_analyzer/releases)：Windows GUI 为轻量 `setup.exe`，macOS GUI 为未压缩 DMG，Linux GUI 为独立程序，同时提供各平台 CLI 和 `SHA256SUMS`。预览版不会替换正式版的 Latest 标记；普通分支推送不发布 Release。
 
 ## 开源协议
 

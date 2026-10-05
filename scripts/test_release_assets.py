@@ -5,11 +5,22 @@ import json
 from pathlib import Path
 import plistlib
 import shutil
+import struct
 import tempfile
 import unittest
 from unittest.mock import patch
 
-from release_assets import APP_FILES, APP_NAME, asset_names, checksum_manifest, validate_app_bundle, validate_image_contents, validate_source, verify_app_image
+from release_assets import APP_FILES, APP_NAME, asset_names, checksum_manifest, macos_bundle_versions, source_info, validate_app_bundle, validate_image_contents, validate_installer_file, validate_source, verify_app_image
+
+
+def synthetic_installer():
+    data = bytearray(512)
+    data[:2] = b"MZ"
+    struct.pack_into("<I", data, 0x3c, 64)
+    data[64:68] = b"PE\0\0"
+    struct.pack_into("<H", data, 68, 0x14c)
+    data[256:272] = b"\xef\xbe\xad\xdeNullsoftInst"
+    return data
 
 
 class AssetsTest(unittest.TestCase):
@@ -86,6 +97,35 @@ class AssetsTest(unittest.TestCase):
             checksum_manifest(self.directory)
         self.assertEqual(target.read_bytes(), original)
 
+    def test_preview_manifest_uses_installer_and_rejects_extra_portable_gui(self):
+        portable = self.directory / "easy-analyzer-gui-windows-x64.exe"
+        installer = self.directory / "easy-analyzer-gui-windows-x64-setup.exe"
+        installer.write_bytes(synthetic_installer())
+        with self.assertRaises(ValueError):
+            checksum_manifest(self.directory, preview=True)
+        portable.unlink()
+        checksum_manifest(self.directory, preview=True)
+        lines = (self.directory / "SHA256SUMS").read_text().splitlines()
+        self.assertEqual(len(lines), 6)
+        self.assertEqual({line.split("  ")[1] for line in lines}, set(asset_names(preview=True)))
+        self.assertTrue(any(installer.name in line for line in lines))
+        with self.assertRaises(ValueError):
+            checksum_manifest(self.directory)  # Stable assets remain portable programs.
+
+    def test_installer_requires_pe_and_nsis_without_executing_it(self):
+        installer = self.directory / "setup.exe"
+        with patch("release_assets.subprocess.run") as run:
+            installer.write_bytes(synthetic_installer())
+            validate_installer_file(installer)
+            for offset, replacement in [(0, b"XX"), (64, b"BAD!"), (68, b"\x64\xaa"), (256, b"not an installer")]:
+                with self.subTest(offset=offset):
+                    changed = synthetic_installer()
+                    changed[offset:offset + len(replacement)] = replacement
+                    installer.write_bytes(changed)
+                    with self.assertRaises(ValueError):
+                        validate_installer_file(installer)
+            run.assert_not_called()
+
 
 class VersionTest(unittest.TestCase):
     def setUp(self):
@@ -113,6 +153,29 @@ class VersionTest(unittest.TestCase):
         for tag in ("main", f"v{self.version}-rc1", "v999.0.0"):
             with self.subTest(tag=tag), self.assertRaises(ValueError):
                 validate_source(self.root, tag)
+
+    def set_version(self, version):
+        for path in self.root.rglob("*"):
+            if path.is_file():
+                path.write_text(path.read_text(encoding="utf-8").replace(self.version, version), encoding="utf-8")
+
+    def test_preview_source_and_branch_never_publish_without_a_tag(self):
+        self.set_version("1.4.0-preview.1")
+        validate_source(self.root, "v1.4.0-preview.1")
+        self.assertEqual(source_info(self.root, "refs/heads/codex/incident-projects-ioc"), {
+            "version": "1.4.0-preview.1", "preview": "true", "publish": "false",
+        })
+        self.assertEqual(source_info(self.root, "refs/tags/v1.4.0-preview.1")["publish"], "true")
+        for tag in ("v1.4.0", "v1.4.0-preview.2", "v1.4.0-preview.0", "v1.4.0-preview.01", "v1.4.0-preview.256", "v1.4.0-rc.1"):
+            with self.subTest(tag=tag), self.assertRaises(ValueError):
+                source_info(self.root, f"refs/tags/{tag}")
+
+    def test_stable_source_keeps_the_stable_channel(self):
+        self.set_version("1.4.0")
+        self.assertEqual(source_info(self.root, "refs/tags/v1.4.0"), {
+            "version": "1.4.0", "preview": "false", "publish": "true",
+        })
+        self.assertEqual(source_info(self.root, "refs/heads/codex/incident-projects-ioc")["publish"], "false")
 
     def test_rejects_gui_or_lock_version_drift(self):
         paths = [
@@ -154,6 +217,15 @@ class AppBundleTest(unittest.TestCase):
 
     def test_complete_app_is_valid(self):
         validate_app_bundle(self.bundle, self.version)
+
+    def test_preview_bundle_uses_apple_version_fields(self):
+        short, build = macos_bundle_versions("1.4.0-preview.1")
+        self.assertEqual((short, build), ("1.4.0", "1.4.0d1"))
+        self.info.update(CFBundleShortVersionString=short, CFBundleVersion=build)
+        self.info_path.write_bytes(plistlib.dumps(self.info))
+        validate_app_bundle(self.bundle, "1.4.0-preview.1")
+        with self.assertRaises(ValueError):
+            macos_bundle_versions("1.4.0-preview.256")
 
     def test_missing_icon_and_extra_config_are_rejected(self):
         icon = self.bundle / "Contents/Resources/icon.icns"

@@ -7,6 +7,7 @@ from pathlib import Path
 import plistlib
 import re
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -22,19 +23,27 @@ APP_FILES = {
 }
 
 
-def asset_names(platform=None):
+def asset_names(platform=None, preview=False):
     platforms = [platform] if platform else PLATFORMS
     return [
-        f"easy-analyzer-{kind}-{name}{'.dmg' if name == 'macos-arm64' and kind == 'gui' else PLATFORMS[name]}"
+        f"easy-analyzer-{kind}-{name}{'-setup.exe' if preview and name == 'windows-x64' and kind == 'gui' else '.dmg' if name == 'macos-arm64' and kind == 'gui' else PLATFORMS[name]}"
         for name in platforms
         for kind in ("cli", "gui")
     ]
 
 
+def macos_bundle_versions(version):
+    match = re.fullmatch(r"(\d+\.\d+\.\d+)(?:-preview\.([1-9]\d*))?", version)
+    if not match or (match[2] and int(match[2]) > 255):
+        raise ValueError(f"Invalid release version: {version}")
+    return match[1], f"{match[1]}d{match[2]}" if match[2] else match[1]
+
+
 def validate_source(root, tag):
-    if not re.fullmatch(r"v\d+\.\d+\.\d+", tag):
+    if not tag.startswith("v"):
         raise ValueError(f"Invalid release tag: {tag}")
     version = tag[1:]
+    macos_bundle_versions(version)
     workspace = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))["workspace"]
     if workspace["package"]["version"] != version:
         raise ValueError("Release tag differs from workspace version")
@@ -54,6 +63,13 @@ def validate_source(root, tag):
             raise ValueError(f"GUI version mismatch: {path}")
         if path.endswith("package-lock.json") and data["packages"][""]["version"] != version:
             raise ValueError("GUI npm root package version mismatch")
+
+
+def source_info(root, ref):
+    version = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))["workspace"]["package"]["version"]
+    publish = ref.startswith("refs/tags/")
+    validate_source(root, ref.removeprefix("refs/tags/") if publish else f"v{version}")
+    return {"version": version, "preview": str("-preview." in version).lower(), "publish": str(publish).lower()}
 
 
 def validate_app_bundle(bundle, version):
@@ -79,11 +95,12 @@ def validate_app_bundle(bundle, version):
     try:
         with (bundle / "Contents/Info.plist").open("rb") as source:
             info = plistlib.load(source)
+        short_version, build_version = macos_bundle_versions(version)
         required = {
             "CFBundleName": "Easy Analyzer", "CFBundleIdentifier": "com.easyanalyzer.gui",
             "CFBundleExecutable": "easy-analyzer-gui", "CFBundleIconFile": "icon.icns",
             "CFBundlePackageType": "APPL", "LSMinimumSystemVersion": "13.0",
-            "CFBundleShortVersionString": version, "CFBundleVersion": version,
+            "CFBundleShortVersionString": short_version, "CFBundleVersion": build_version,
         }
         if any(info.get(key) != value for key, value in required.items()):
             raise ValueError("App metadata differs from release version or identity")
@@ -156,18 +173,46 @@ def verify_program_version(path, kind, version):
         raise ValueError(f"Unexpected {kind} program version: {result.stdout!r}")
 
 
-def verify_programs(directory, platform, version):
+def validate_installer_file(path):
+    """Check the PE/NSIS container without running an installer during validation."""
+    if path.is_symlink() or not path.is_file() or path.stat().st_size < 512:
+        raise ValueError("Invalid Windows installer")
+    with path.open("rb") as source:
+        header = source.read(64)
+        if header[:2] != b"MZ":
+            raise ValueError("Expected a Windows PE installer")
+        offset = struct.unpack_from("<I", header, 0x3c)[0]
+        if not 64 <= offset <= path.stat().st_size - 6:
+            raise ValueError("Invalid Windows PE header")
+        source.seek(offset)
+        pe = source.read(6)
+        if pe[:4] != b"PE\0\0" or struct.unpack_from("<H", pe, 4)[0] not in (0x14c, 0x8664):
+            raise ValueError("Expected an x86/x64 installer stub")
+        source.seek(0)
+        signature = b"\xef\xbe\xad\xdeNullsoftInst"
+        tail = b""
+        while block := source.read(1024 * 1024):
+            if signature in tail + block:
+                return
+            tail = block[-len(signature):]
+    raise ValueError("Expected a Nullsoft NSIS installer")
+
+
+def verify_programs(directory, platform, version, preview=False):
     # Capture explicit pipes, including Windows GUI-subsystem programs without a console.
-    for name, kind in zip(asset_names(platform), ("cli", "gui")):
+    for name, kind in zip(asset_names(platform, preview), ("cli", "gui")):
         path = directory / name
+        if preview and platform == "windows-x64" and kind == "gui":
+            validate_installer_file(path)
+            continue
         if platform != "macos-arm64" or kind != "gui":
             verify_program_version(path, kind, version)
             continue
         verify_app_image(path, version)
 
 
-def checksum_manifest(directory):
-    names = asset_names()
+def checksum_manifest(directory, preview=False):
+    names = asset_names(preview=preview)
     entries = {p.name for p in directory.iterdir()}
     # Re-running locally may replace a manifest, but no other file or folder is allowed.
     if entries - {"SHA256SUMS"} != set(names):
@@ -182,6 +227,8 @@ def checksum_manifest(directory):
             raise ValueError(f"Invalid release program: {name}")
         if name.endswith(".dmg"):
             validate_image_file(path)
+        elif name.endswith("-setup.exe"):
+            validate_installer_file(path)
         with path.open("rb") as program:
             digest = hashlib.file_digest(program, "sha256").hexdigest()
         lines.append(f"{digest}  {name}\n")
@@ -194,27 +241,42 @@ def main():
     source = commands.add_parser("validate-source")
     source.add_argument("tag")
     source.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
+    info = commands.add_parser("source-info")
+    info.add_argument("ref")
+    info.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
+    program = commands.add_parser("verify-program")
+    program.add_argument("path", type=Path)
+    program.add_argument("kind", choices=("cli", "gui"))
+    program.add_argument("version")
     programs = commands.add_parser("verify-programs")
     programs.add_argument("directory", type=Path)
     programs.add_argument("platform", choices=PLATFORMS)
     programs.add_argument("version")
+    programs.add_argument("--preview", action="store_true")
     checksums = commands.add_parser("checksums")
     checksums.add_argument("directory", type=Path)
+    checksums.add_argument("--preview", action="store_true")
     app = commands.add_parser("verify-app-image")
     app.add_argument("image", type=Path)
     app.add_argument("version")
-    commands.add_parser("names")
+    names = commands.add_parser("names")
+    names.add_argument("--preview", action="store_true")
     args = parser.parse_args()
     if args.command == "validate-source":
         validate_source(args.root, args.tag)
+    elif args.command == "source-info":
+        for key, value in source_info(args.root, args.ref).items():
+            print(f"{key}={value}")
+    elif args.command == "verify-program":
+        verify_program_version(args.path, args.kind, args.version)
     elif args.command == "verify-programs":
-        verify_programs(args.directory, args.platform, args.version)
+        verify_programs(args.directory, args.platform, args.version, args.preview)
     elif args.command == "checksums":
-        checksum_manifest(args.directory)
+        checksum_manifest(args.directory, args.preview)
     elif args.command == "verify-app-image":
         verify_app_image(args.image, args.version)
     else:
-        print("\n".join(asset_names() + ["SHA256SUMS"]))
+        print("\n".join(asset_names(preview=args.preview) + ["SHA256SUMS"]))
 
 
 if __name__ == "__main__":

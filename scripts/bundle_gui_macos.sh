@@ -22,15 +22,20 @@ chmod 755 "$gui_bundle/Contents/MacOS/easy-analyzer-gui"
 cp "$gui_root/crates/analyzer-gui/assets/OFL.txt" "$gui_bundle/Contents/Resources/OFL.txt"
 cp "$gui_root/crates/analyzer-gui/icons/easy-family/icon.icns" "$gui_bundle/Contents/Resources/icon.icns"
 cp "$gui_root/LICENSE" "$gui_bundle/Contents/Resources/LICENSE"
-python3 - "$gui_root/crates/analyzer-gui/tauri.conf.json" "$gui_bundle/Contents/Info.plist" <<'PY'
+python3 - "$gui_root" "$gui_bundle/Contents/Info.plist" <<'PY'
 import json, plistlib, sys
-with open(sys.argv[1], encoding="utf-8") as source:
+from pathlib import Path
+root = Path(sys.argv[1])
+sys.path.insert(0, str(root / "scripts"))
+from release_assets import macos_bundle_versions
+with (root / "crates/analyzer-gui/tauri.conf.json").open(encoding="utf-8") as source:
     config = json.load(source)
+short_version, build_version = macos_bundle_versions(config["version"])
 info = {
     "CFBundleName": config["productName"], "CFBundleDisplayName": config["productName"],
     "CFBundleIdentifier": config["identifier"], "CFBundleExecutable": "easy-analyzer-gui",
     "CFBundleIconFile": "icon.icns", "CFBundlePackageType": "APPL",
-    "CFBundleShortVersionString": config["version"], "CFBundleVersion": config["version"],
+    "CFBundleShortVersionString": short_version, "CFBundleVersion": build_version,
     "LSMinimumSystemVersion": config["bundle"]["macOS"]["minimumSystemVersion"],
     "NSHighResolutionCapable": True, "NSRequiresAquaSystemAppearance": False,
 }
