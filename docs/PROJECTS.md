@@ -28,6 +28,8 @@ CLI `project import` 自动保存此次显式操作，`project open` 只读打�
 
 ## IOC
 
+GUI 的 IOC 匹配位于“证据”分组。每个项目独立保存清单、说明、扫描策略及命中结果；同一个 IOC 可以在不同项目中使用不同说明，去重仅在当前项目内生效。切换项目恢复该项目的 IOC 数据，新建项目从空清单开始。项目目录库不保存或汇总 IOC 数据。
+
 GUI 支持 TXT/CSV 文件、粘贴和手动添加，三种入口共用校验及去重。TXT 每行一个 IOC；CSV 可转义逗号、引号及多行说明，列名为 `type,value` 和可选 `note`：
 
 ```csv
@@ -65,7 +67,7 @@ easy-analyzer project open response.eair --ioc-stdin --ioc-stdin-csv \
 
 ## 验证记录（2026-10-05）
 
-Rust workspace 88 项测试（含文档测试）和 GUI 前端 44 项测试通过；覆盖跨客户会话隔离、同客户独立 UUID、多天追加、重复来源/内容变化、原输入移除后恢复、目录重定位、保存取消与外部修改、路径保护、元数据/筛选/备注、AI 过期预览、IOC 三入口/转义/无效行/边界/重复与取消覆盖。前端覆盖保存成功后继续、保存失败留在原项目和未保存关闭提示。
+Rust workspace 91 项测试（含文档测试）和 GUI 前端 46 项测试通过；覆盖跨客户会话隔离、同客户独立 UUID、多天追加、重复来源/内容变化、原输入移除后恢复、目录重定位、保存取消与外部修改、路径保护、元数据/筛选/备注、AI 过期预览、IOC 三入口/转义/无效行/边界/重复与取消覆盖。IOC 数据库专项验证使用两个客户项目，相同 IOC 分别保存不同说明和扫描策略，修改一个项目不影响另一个，独立保存后交替重开，清单、命中和扫描状态保持一致，新项目为空，目录库只含项目资料。前端覆盖保存成功后继续、保存失败留在原项目和未保存关闭提示。
 
 macOS ARM64 原生 GUI 使用合成客户：创建项目、导入 `auth.log`、粘贴含无效行的 IOC、完成扫描、保存项目；CLI 打开恢复证据/IOC 并写备注，移动后 GUI 提示缺失、重新定位，并显示 CLI 备注。Windows/Linux 桌面交互未实机验证。SQLite 已完成 macOS ARM64、Linux x64 GNU 和 Windows x64 GNU 编译检查；正式 Windows MSVC 编译仍需 Windows SDK/Visual Studio 工具链，当前 macOS 环境缺少该工具链，不能以 GNU 检查替代 MSVC 验证。现有发布 CI 的三个原生 runner 将构建 bundled SQLite；本次没有运行发布 Actions。
 

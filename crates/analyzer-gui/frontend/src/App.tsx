@@ -1500,12 +1500,14 @@ export function App() {
             <div className="sidebar-section">工作台</div>
             {screens
               .filter((s) => s !== "settings")
-              .map((s, i) => {
+              .map((s) => {
                 const Icon = icons[s];
                 return (
                   <div key={s}>
-                    {i === 2 && <div className="sidebar-section">证据</div>}
-                    {i === 5 && (
+                    {s === "import" && (
+                      <div className="sidebar-section">证据</div>
+                    )}
+                    {s === "processes" && (
                       <div className="sidebar-section">分析与输出</div>
                     )}
                     <Tooltip text={titles[s]}>

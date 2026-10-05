@@ -289,10 +289,10 @@ export const statusLabel: Record<ParseStatus, string> = {
 };
 export const screens: Screen[] = [
   "projects",
-  "ioc",
   "import",
   "overview",
   "logs",
+  "ioc",
   "processes",
   "network",
   "ai",

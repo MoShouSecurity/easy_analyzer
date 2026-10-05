@@ -148,6 +148,146 @@ fn append_dedup_notes_ioc_and_recovery_without_originals() {
     assert!(!ProjectService::status(&reopened).unwrap().dirty);
     assert!(!dir.path().join("project.eair-wal").exists());
 }
+
+#[test]
+fn ioc_databases_remain_project_scoped_after_save_and_reopen() {
+    let a = ProjectService::create(ProjectInfo::new("响应甲", "合成客户甲")).unwrap();
+    let b = ProjectService::create(ProjectInfo::new("响应乙", "合成客户乙")).unwrap();
+    let evidence = "visit shared.example.com\nvisit child.shared.example.com\nvisit alpha.example.net\nvisit beta.example.net";
+    for session in [&a, &b] {
+        append(session, "same-host", evidence);
+        assert_eq!(IocService::indicators(session, 0, 100).unwrap().total, 0);
+        assert!(IocService::status(session).unwrap().run.is_none());
+    }
+    let shared_a = IocService::add_value(&a, "shared.example.com", None, "甲的说明", &ctx())
+        .unwrap()
+        .indicators[0]
+        .id
+        .clone();
+    let shared_b = IocService::add_value(&b, "SHARED.example.com", None, "乙的说明", &ctx())
+        .unwrap()
+        .indicators[0]
+        .id
+        .clone();
+    // Equal normalized IOC IDs must still refer to independent project rows.
+    assert_eq!(shared_a, shared_b);
+    let unique_a = IocService::add_value(&a, "alpha.example.net", None, "仅甲", &ctx())
+        .unwrap()
+        .indicators[0]
+        .id
+        .clone();
+    IocService::add_value(&b, "beta.example.net", None, "仅乙", &ctx()).unwrap();
+    IocService::scan(&a, true, &ctx()).unwrap();
+    IocService::scan(&b, false, &ctx()).unwrap();
+
+    let snapshot = |session: &AnalysisSession| {
+        serde_json::json!({
+            "indicators": IocService::indicators(session, 0, 100).unwrap(),
+            "hits": IocService::matches(session, 0, 100).unwrap(),
+            "status": IocService::status(session).unwrap(),
+        })
+    };
+    let unchanged_b = snapshot(&b);
+    IocService::edit_note(&a, &shared_a, "甲修改后的说明", &ctx()).unwrap();
+    assert_eq!(snapshot(&b), unchanged_b);
+    assert!(
+        IocService::edit_note(&b, &unique_a, "不得写入乙", &ctx())
+            .unwrap_err()
+            .to_string()
+            .contains("不属于当前项目")
+    );
+    assert_eq!(snapshot(&b), unchanged_b);
+
+    for (session, unique, shared_note, subdomains) in [
+        (&a, "alpha.example.net", "甲修改后的说明", true),
+        (&b, "beta.example.net", "乙的说明", false),
+    ] {
+        let indicators = IocService::indicators(session, 0, 100).unwrap();
+        assert_eq!(indicators.total, 2);
+        assert!(indicators.items.iter().any(|i| i.value == unique));
+        assert!(
+            indicators
+                .items
+                .iter()
+                .any(|i| i.id == shared_a && i.note == shared_note)
+        );
+        let hits = IocService::matches(session, 0, 100).unwrap();
+        assert!(hits.items.iter().any(|h| h.value == unique));
+        assert!(hits.items.iter().any(|h| h.indicator_id == shared_a));
+        assert_eq!(
+            hits.items
+                .iter()
+                .any(|h| h.matched_value == "child.shared.example.com"),
+            subdomains
+        );
+        for hit in hits.items {
+            assert!(hit.value == unique || hit.indicator_id == shared_a);
+            if hit.indicator_id == shared_a {
+                assert_eq!(hit.note, shared_note);
+            }
+            assert!(session.record(&hit.record_id).unwrap().is_some());
+        }
+        let status = IocService::status(session).unwrap();
+        assert!(!status.needs_rescan);
+        assert_eq!(status.run.unwrap().include_subdomains, subdomains);
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let catalog_dir = dir.path().join("catalog");
+    let catalog = ProjectCatalog::open(&catalog_dir).unwrap();
+    let mut saved = Vec::new();
+    for (session, name) in [(&a, "a.eair"), (&b, "b.eair")] {
+        let path = dir.path().join(name);
+        ProjectService::save(
+            session,
+            &path,
+            Path::new("missing-config.toml"),
+            false,
+            &ctx(),
+        )
+        .unwrap();
+        catalog.register(session).unwrap();
+        saved.push((
+            path,
+            ProjectService::status(session).unwrap().info,
+            snapshot(session),
+        ));
+    }
+    drop(a);
+    drop(b);
+    // Alternate opening independent snapshots, without the original live sessions.
+    for index in [1, 0, 1, 0] {
+        let (path, info, expected) = &saved[index];
+        let reopened = ProjectService::open(path, &ctx()).unwrap();
+        assert_eq!(ProjectService::status(&reopened).unwrap().info.id, info.id);
+        assert_eq!(&snapshot(&reopened), expected);
+    }
+    let fresh = create();
+    assert_eq!(IocService::indicators(&fresh, 0, 100).unwrap().total, 0);
+    assert_eq!(IocService::matches(&fresh, 0, 100).unwrap().total, 0);
+    assert!(IocService::status(&fresh).unwrap().run.is_none());
+
+    let db = rusqlite::Connection::open(catalog_dir.join("projects.sqlite")).unwrap();
+    let tables = db
+        .prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(tables, ["projects"]);
+    for (_, info, _) in saved {
+        let stored: String = db
+            .query_row("SELECT json FROM projects WHERE id=?1", [&info.id], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&stored).unwrap(),
+            serde_json::to_value(info).unwrap()
+        );
+    }
+}
 #[test]
 fn save_as_cancel_conflicts_and_input_protection() {
     let session = create();

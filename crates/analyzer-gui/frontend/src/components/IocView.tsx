@@ -177,6 +177,7 @@ export function IocView({
       <section>
         <h2>项目 IOC 清单</h2>
         <p>{view?.status.indicators ?? 0} 个 IOC · 统一去重</p>
+        <p>清单、说明和匹配结果仅属于当前项目，随项目保存。</p>
         <div className="project-actions">
           <Checkbox
             checked={subdomains}
