@@ -66,7 +66,12 @@ def main():
     command = [node, str(cli), "bundle" if args.bundle_only else "build",
                "--target", args.target, "--ci"]
     if not args.bundle_only:
-        command += ["--", "--locked"]
+        # Tauri discovers the frontend directory independently of the process cwd.
+        # Pin the hook directory so nested layouts and Windows paths work alike.
+        build_config = {"build": {"beforeBuildCommand": {
+            "script": "npm run build", "cwd": str(frontend),
+        }}}
+        command += ["--config", json.dumps(build_config), "--", "--locked"]
     run(command, gui, env)
     config = json.loads((gui / "tauri.conf.json").read_text(encoding="utf-8"))
     source = root / "target" / args.target / "release/bundle/nsis" / (
