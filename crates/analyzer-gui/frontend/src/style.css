@@ -2259,6 +2259,45 @@ small {
   align-items: center;
   flex-wrap: wrap;
 }
+.project-page {
+  width: 100%;
+  margin: 0 auto;
+  overflow: auto;
+}
+.project-start,
+.project-browser {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.project-start h3,
+.project-list-heading h3 {
+  font-size: 15px;
+}
+.project-start p,
+.project-list-heading p,
+.project-filters > p {
+  margin: 6px 0 0;
+  color: var(--secondary);
+  font-size: 13px;
+}
+.project-filters {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+.project-filters summary {
+  cursor: pointer;
+  font-weight: 500;
+}
+.project-filters .project-search {
+  margin-top: 14px;
+}
 .project-search,
 .project-form {
   display: grid;

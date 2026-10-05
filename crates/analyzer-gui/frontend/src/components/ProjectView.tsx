@@ -185,73 +185,99 @@ export function ProjectHome({
   }, [text, client, from, until]);
   return (
     <div className="project-page">
-      <div className="project-actions">
-        <Button disabled={busy} onClick={onNew}>
-          新建项目
-        </Button>
-        <Button variant="secondary" disabled={busy} onClick={onPick}>
-          打开项目文件
-        </Button>
-      </div>
-      <div className="project-search">
-        <label>
-          项目名称 / 客户单位
-          <input
-            aria-label="项目搜索"
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-          />
-        </label>
-        <label>
-          客户单位
-          <input value={client} onChange={(e) => setClient(e.target.value)} />
-        </label>
-        <label>
-          响应开始日期，从
-          <input
-            type="date"
-            value={from}
-            onChange={(e) => setFrom(e.target.value)}
-          />
-        </label>
-        <label>
-          至
-          <input
-            type="date"
-            value={until}
-            onChange={(e) => setUntil(e.target.value)}
-          />
-        </label>
-      </div>
-      <p>按最近打开排序 · {loading ? "正在查询…" : `${rows.length} 个项目`}</p>
-      <div className="project-list">
-        {rows.map((row) => (
-          <article key={row.info.id}>
-            <div>
-              <h3>{row.info.name}</h3>
-              <p>
-                {row.info.client} · {row.info.response_start}
-              </p>
-              <small>{row.path}</small>
-              {row.missing && (
-                <p className="error-text">
-                  项目文件缺失，请重新打开移动后的文件
+      <section className="project-start" aria-labelledby="project-start-title">
+        <div>
+          <h3 id="project-start-title">新建或续办应急响应</h3>
+          <p>点击“新建项目”填写客户单位、响应时间等资料。</p>
+        </div>
+        <div className="project-actions">
+          <Button disabled={busy} onClick={onNew}>
+            新建项目
+          </Button>
+          <Button variant="secondary" disabled={busy} onClick={onPick}>
+            打开项目文件
+          </Button>
+        </div>
+      </section>
+      <section className="project-browser" aria-labelledby="project-list-title">
+        <div className="project-list-heading">
+          <h3 id="project-list-title">已有项目</h3>
+          <p>
+            按最近打开排序 · {loading ? "正在查询…" : `${rows.length} 个项目`}
+          </p>
+        </div>
+        <details className="project-filters">
+          <summary>筛选已有项目</summary>
+          <p>以下条件用于查找项目列表。</p>
+          <div className="project-search">
+            <label>
+              搜索项目名称或客户单位
+              <input
+                aria-label="项目搜索"
+                placeholder="输入关键词查找已有项目"
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+              />
+            </label>
+            <label>
+              按客户单位筛选
+              <input
+                value={client}
+                placeholder="全部客户单位"
+                onChange={(e) => setClient(e.target.value)}
+              />
+            </label>
+            <label>
+              响应开始日期不早于
+              <input
+                type="date"
+                value={from}
+                onChange={(e) => setFrom(e.target.value)}
+              />
+            </label>
+            <label>
+              响应开始日期不晚于
+              <input
+                type="date"
+                value={until}
+                onChange={(e) => setUntil(e.target.value)}
+              />
+            </label>
+          </div>
+        </details>
+        <div className="project-list">
+          {rows.map((row) => (
+            <article key={row.info.id}>
+              <div>
+                <h3>{row.info.name}</h3>
+                <p>
+                  {row.info.client} · {row.info.response_start}
                 </p>
-              )}
-            </div>
-            <Button
-              variant="secondary"
-              disabled={busy || row.missing}
-              onClick={() => onOpen(row.path)}
-            >
-              继续项目
-            </Button>
-          </article>
-        ))}
-        {!rows.length && !loading && (
-          <p>创建项目并填写客户单位，或打开已有 .eair 文件继续响应。</p>
-        )}
-      </div>
+                <small>{row.path}</small>
+                {row.missing && (
+                  <p className="error-text">
+                    项目文件缺失，请重新打开移动后的文件
+                  </p>
+                )}
+              </div>
+              <Button
+                variant="secondary"
+                disabled={busy || row.missing}
+                onClick={() => onOpen(row.path)}
+              >
+                继续项目
+              </Button>
+            </article>
+          ))}
+          {!rows.length && !loading && (
+            <p>
+              {text.trim() || client.trim() || from || until
+                ? "没有符合筛选条件的项目，请调整筛选条件。"
+                : "还没有已保存的项目。点击上方“新建项目”开始响应，或打开已有 .eair 文件。"}
+            </p>
+          )}
+        </div>
+      </section>
     </div>
   );
 }
