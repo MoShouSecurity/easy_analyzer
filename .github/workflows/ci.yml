@@ -160,13 +160,15 @@ jobs:
           (cd release && sha256sum --check SHA256SUMS)
           python scripts/release_assets.py names "${options[@]}" > "$RUNNER_TEMP/expected-assets.txt"
           jq -Rsc 'split("\n") | map(select(length > 0)) | sort' "$RUNNER_TEMP/expected-assets.txt" > "$RUNNER_TEMP/expected-assets.json"
+          version="${RELEASE_TAG#v}"
+          awk -v version="$version" 'index($0, "## " version " — ") == 1 { found=1; next } found && /^## / { exit } found { print }' CHANGELOG.md > "$RUNNER_TEMP/release-notes.md"
+          test -s "$RUNNER_TEMP/release-notes.md"
           if [[ "$PREVIEW" == true ]]; then
-            echo '应急响应项目与 IOC 功能预览版，用于验证新功能。' > "$RUNNER_TEMP/release-notes.md"
+            echo '应急响应项目与 IOC 功能预览版，用于验证新功能。' >> "$RUNNER_TEMP/release-notes.md"
             echo '新增独立 SQLite 项目、跨客户续办与追加证据、IOC 文件/粘贴/手动匹配，以及 macOS/Windows 安装包。' >> "$RUNNER_TEMP/release-notes.md"
             echo '' >> "$RUNNER_TEMP/release-notes.md"
             windows_gui=easy-analyzer-gui-windows-x64-setup.exe
           else
-            : > "$RUNNER_TEMP/release-notes.md"
             windows_gui=easy-analyzer-gui-windows-x64.exe
           fi
           cat >> "$RUNNER_TEMP/release-notes.md" <<NOTES

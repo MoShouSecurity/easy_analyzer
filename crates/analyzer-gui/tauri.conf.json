@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Easy Analyzer",
-  "version": "1.4.0-preview.1",
+  "version": "1.4.0",
   "identifier": "com.easyanalyzer.gui",
   "build": {
     "beforeDevCommand": "npm --prefix frontend run dev",
