@@ -657,6 +657,23 @@ impl ProjectCatalog {
         }
         Ok(())
     }
+    /// Remove only the catalog entry. The project file and open session are preserved.
+    pub fn remove(&self, id: &str, path: &str) -> Result<()> {
+        Uuid::parse_str(id).context("无效的项目 UUID")?;
+        let c = self
+            .connection
+            .lock()
+            .map_err(|_| anyhow!("项目目录不可用"))?;
+        // Matching the displayed path also protects a project relocated since the list was read.
+        if c.execute(
+            "DELETE FROM projects WHERE id=?1 AND path=?2",
+            params![id, path],
+        )? == 0
+        {
+            bail!("项目列表已更新，请刷新后重试");
+        }
+        Ok(())
+    }
     pub fn list(&self, search: &ProjectSearch) -> Result<Vec<ProjectEntry>> {
         let from = search
             .from

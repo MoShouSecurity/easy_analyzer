@@ -28,6 +28,8 @@ export const api = {
     from: string | null;
     until: string | null;
   }) => invoke<ProjectEntry[]>("project_list", { search }),
+  removeProject: (id: string, path: string) =>
+    invoke<void>("project_remove", { id, path }),
   createProject: (info: ProjectInfo) =>
     invoke<TaskMessage>("project_create", { info }),
   openProject: (path: string) => invoke<TaskMessage>("project_open", { path }),

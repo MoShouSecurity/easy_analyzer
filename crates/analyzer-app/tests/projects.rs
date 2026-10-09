@@ -83,6 +83,108 @@ fn identity_time_validation_and_catalog_relocation() {
     );
 }
 #[test]
+fn catalog_removal_preserves_project_files_session_evidence_and_ioc() {
+    let dir = tempfile::tempdir().unwrap();
+    let catalog_root = dir.path().join("catalog");
+    let catalog = ProjectCatalog::open(&catalog_root).unwrap();
+    let a = create();
+    let b = ProjectService::create(ProjectInfo::new("另一响应", "合成客户乙")).unwrap();
+    append(&a, "host-a", "visit child.example.com");
+    let record = a.page(None, 0, 1).unwrap().items[0].id.clone();
+    ProjectService::note(&a, &record, "保留的证据备注", &ctx()).unwrap();
+    IocService::add_value(&a, "example.com", None, "保留的 IOC 说明", &ctx()).unwrap();
+    IocService::scan(&a, true, &ctx()).unwrap();
+    let hits = IocService::matches(&a, 0, 100).unwrap().total;
+    assert!(hits > 0);
+    for (session, name) in [(&a, "a.eair"), (&b, "b.eair")] {
+        ProjectService::save(
+            session,
+            &dir.path().join(name),
+            Path::new("config"),
+            false,
+            &ctx(),
+        )
+        .unwrap();
+        catalog.register(session).unwrap();
+    }
+    let status = ProjectService::status(&a).unwrap();
+    let path = status.path.as_ref().unwrap();
+    let saved_a = std::fs::read(path).unwrap();
+    let saved_b = std::fs::read(dir.path().join("b.eair")).unwrap();
+    // A mismatched UUID/path pair must never remove a different customer's entry.
+    assert!(
+        catalog
+            .remove(
+                &status.info.id,
+                &dir.path().join("b.eair").display().to_string()
+            )
+            .is_err()
+    );
+    assert_eq!(catalog.list(&Default::default()).unwrap().len(), 2);
+    catalog.remove(&status.info.id, path).unwrap();
+    drop(catalog);
+    let catalog = ProjectCatalog::open(&catalog_root).unwrap();
+    let entries = catalog.list(&Default::default()).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        entries[0].info.id,
+        ProjectService::status(&b).unwrap().info.id
+    );
+    assert_eq!(std::fs::read(path).unwrap(), saved_a);
+    assert_eq!(std::fs::read(dir.path().join("b.eair")).unwrap(), saved_b);
+    let after = ProjectService::status(&a).unwrap();
+    assert_eq!(after.path, status.path);
+    assert_eq!(after.revision, status.revision);
+    assert_eq!(after.dirty, status.dirty);
+    assert_eq!(IocService::matches(&a, 0, 100).unwrap().total, hits);
+    let reopened = ProjectService::open(Path::new(path), &ctx()).unwrap();
+    assert_eq!(
+        ProjectService::status(&reopened).unwrap().info.id,
+        status.info.id
+    );
+    assert_eq!(
+        ProjectService::read_note(&reopened, &record)
+            .unwrap()
+            .as_deref(),
+        Some("保留的证据备注")
+    );
+    assert_eq!(
+        IocService::indicators(&reopened, 0, 100).unwrap().items[0].note,
+        "保留的 IOC 说明"
+    );
+    assert_eq!(IocService::matches(&reopened, 0, 100).unwrap().total, hits);
+    catalog.register(&reopened).unwrap();
+    assert_eq!(catalog.list(&Default::default()).unwrap().len(), 2);
+}
+
+#[test]
+fn catalog_removal_rejects_stale_paths_and_can_remove_missing_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let catalog = ProjectCatalog::open(&dir.path().join("catalog")).unwrap();
+    let session = create();
+    let first = dir.path().join("first.eair");
+    ProjectService::save(&session, &first, Path::new("config"), false, &ctx()).unwrap();
+    catalog.register(&session).unwrap();
+    let displayed = catalog.list(&Default::default()).unwrap().remove(0);
+    let second = dir.path().join("second.eair");
+    ProjectService::save(&session, &second, Path::new("config"), false, &ctx()).unwrap();
+    catalog.register(&session).unwrap();
+    let current = catalog.list(&Default::default()).unwrap().remove(0);
+    assert_eq!(current.info.id, displayed.info.id);
+    assert_ne!(current.path, displayed.path);
+    assert!(catalog.remove(&displayed.info.id, &displayed.path).is_err());
+    assert!(catalog.remove("invalid-id", &current.path).is_err());
+    assert_eq!(
+        catalog.list(&Default::default()).unwrap()[0].path,
+        current.path
+    );
+    std::fs::remove_file(&second).unwrap();
+    assert!(catalog.list(&Default::default()).unwrap()[0].missing);
+    catalog.remove(&current.info.id, &current.path).unwrap();
+    assert!(catalog.list(&Default::default()).unwrap().is_empty());
+    assert!(first.is_file());
+}
+#[test]
 fn append_dedup_notes_ioc_and_recovery_without_originals() {
     let session = create();
     let dir = tempfile::tempdir().unwrap();
