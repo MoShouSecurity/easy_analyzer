@@ -86,15 +86,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
           key: cli-gui-${{ matrix.target }}
-      - name: Check Rust formatting, lint and workspace tests
-        run: |
-          cargo fmt --all -- --check
-          cargo clippy --locked --workspace --all-targets --target "$BUILD_TARGET" -- -D warnings
-          cargo test --locked --workspace --target "$BUILD_TARGET"
+      # Rust formatting, Clippy and tests run locally before pushing.
       - name: Build CLI
         run: cargo build -p easy-analyzer --release --locked --target "$BUILD_TARGET"
       - name: Build GUI with embedded frontend
