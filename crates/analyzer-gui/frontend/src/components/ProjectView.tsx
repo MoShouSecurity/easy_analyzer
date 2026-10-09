@@ -162,6 +162,10 @@ export function ProjectHome({
   const [until, setUntil] = useState("");
   const [rows, setRows] = useState<ProjectEntry[]>([]);
   const [loading, setLoading] = useState(false);
+  const [refresh, setRefresh] = useState(0);
+  const [removal, setRemoval] = useState<ProjectEntry | null>(null);
+  const [removing, setRemoving] = useState(false);
+  const [removeError, setRemoveError] = useState("");
   useEffect(() => {
     let stale = false;
     const timeout = setTimeout(() => {
@@ -182,7 +186,23 @@ export function ProjectHome({
       stale = true;
       clearTimeout(timeout);
     };
-  }, [text, client, from, until]);
+  }, [text, client, from, until, refresh]);
+  const remove = async () => {
+    if (!removal || busy || removing) return;
+    setRemoving(true);
+    setRemoveError("");
+    try {
+      await api.removeProject(removal.info.id, removal.path);
+      setRows((v) => v.filter((row) => row.info.id !== removal.info.id));
+      setRemoval(null);
+      setRefresh((v) => v + 1);
+    } catch (e) {
+      setRemoveError(String(e));
+      setRefresh((v) => v + 1);
+    } finally {
+      setRemoving(false);
+    }
+  };
   return (
     <div className="project-page">
       <section className="project-start" aria-labelledby="project-start-title">
@@ -191,10 +211,14 @@ export function ProjectHome({
           <p>点击“新建项目”填写客户单位、响应时间等资料。</p>
         </div>
         <div className="project-actions">
-          <Button disabled={busy} onClick={onNew}>
+          <Button disabled={busy || removing} onClick={onNew}>
             新建项目
           </Button>
-          <Button variant="secondary" disabled={busy} onClick={onPick}>
+          <Button
+            variant="secondary"
+            disabled={busy || removing}
+            onClick={onPick}
+          >
             打开项目文件
           </Button>
         </div>
@@ -260,24 +284,76 @@ export function ProjectHome({
                   </p>
                 )}
               </div>
-              <Button
-                variant="secondary"
-                disabled={busy || row.missing}
-                onClick={() => onOpen(row.path)}
-              >
-                继续项目
-              </Button>
+              <div className="project-entry-actions">
+                <Button
+                  variant="secondary"
+                  disabled={busy || removing || row.missing}
+                  onClick={() => onOpen(row.path)}
+                >
+                  继续项目
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="project-remove"
+                  disabled={busy || removing}
+                  aria-label={`从列表移除 ${row.info.name}`}
+                  onClick={() => {
+                    setRemoveError("");
+                    setRemoval(row);
+                  }}
+                >
+                  移除
+                </Button>
+              </div>
             </article>
           ))}
           {!rows.length && !loading && (
             <p>
               {text.trim() || client.trim() || from || until
                 ? "没有符合筛选条件的项目，请调整筛选条件。"
-                : "还没有已保存的项目。点击上方“新建项目”开始响应，或打开已有 .eair 文件。"}
+                : "项目列表为空。点击上方“新建项目”开始响应，或打开已有 .eair 文件。"}
             </p>
           )}
         </div>
       </section>
+      <Dialog
+        open={removal !== null}
+        onOpenChange={(v) => {
+          if (!v && !removing) setRemoval(null);
+        }}
+        title="从列表移除项目"
+        description="只移除本机项目列表记录，保留 .eair 文件、证据和 IOC。重新打开或保存项目后，会再次显示在列表中。"
+      >
+        {removal && (
+          <div className="project-removal-details">
+            <p>
+              {removal.info.name} · {removal.info.client}
+            </p>
+            <small>{removal.path}</small>
+          </div>
+        )}
+        {removeError && (
+          <p role="alert" className="error-text">
+            {removeError}
+          </p>
+        )}
+        <div className="dialog-actions">
+          <Button
+            variant="ghost"
+            disabled={removing}
+            onClick={() => setRemoval(null)}
+          >
+            取消
+          </Button>
+          <Button
+            variant="danger"
+            disabled={busy || removing}
+            onClick={() => void remove()}
+          >
+            {removing ? "正在移除…" : "确认移除"}
+          </Button>
+        </div>
+      </Dialog>
     </div>
   );
 }

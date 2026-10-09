@@ -2362,7 +2362,24 @@ small {
 .project-list h3 {
   margin: 0;
 }
+.project-list article > div:first-child {
+  min-width: 0;
+}
 .project-list small {
+  overflow-wrap: anywhere;
+}
+.project-entry-actions {
+  display: flex;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+}
+.project-remove {
+  color: var(--danger);
+}
+.project-removal-details {
+  margin: 16px 0;
   overflow-wrap: anywhere;
 }
 .project-table {

@@ -4,6 +4,7 @@ import {
   fireEvent,
   waitFor,
   cleanup,
+  within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, it, vi, expect } from "vitest";
 import {
@@ -12,6 +13,7 @@ import {
   newProject,
 } from "../components/ProjectView";
 import { IocView } from "../components/IocView";
+import type { ProjectEntry } from "../types";
 const mock = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mock.invoke }));
 afterEach(cleanup);
@@ -137,6 +139,115 @@ it("searches project metadata and clearly identifies missing files", async () =>
       }),
     ),
   );
+});
+function projectEntry(name: string): ProjectEntry {
+  return {
+    info: { ...newProject(), name, client: `${name}客户` },
+    path: `/tmp/${name}.eair`,
+    last_opened: "2026-10-07T09:00:00+08:00",
+    missing: false,
+  };
+}
+const homeProps = {
+  busy: false,
+  onNew: () => {},
+  onOpen: () => {},
+  onPick: () => {},
+  onError: () => {},
+};
+it("requires confirmation to remove only the selected catalog entry and refreshes the list", async () => {
+  const a = projectEntry("合成响应甲");
+  const b = projectEntry("合成响应乙");
+  let entries = [a, b];
+  mock.invoke.mockImplementation(async (command: string) => {
+    if (command === "project_list") return entries;
+    if (command === "project_remove") entries = [b];
+  });
+  render(<ProjectHome {...homeProps} />);
+  const button = await screen.findByRole("button", {
+    name: "从列表移除 合成响应甲",
+  });
+  fireEvent.click(button);
+  const dialog = screen.getByRole("dialog", { name: "从列表移除项目" });
+  expect(within(dialog).getByText(/保留 .eair 文件、证据和 IOC/)).toBeVisible();
+  expect(within(dialog).getByText(a.path)).toBeVisible();
+  fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+  expect(
+    mock.invoke.mock.calls.some(([command]) => command === "project_remove"),
+  ).toBe(false);
+  expect(screen.getByText(a.info.name)).toBeVisible();
+  fireEvent.click(button);
+  fireEvent.click(screen.getByRole("button", { name: "确认移除" }));
+  await waitFor(() =>
+    expect(mock.invoke).toHaveBeenCalledWith("project_remove", {
+      id: a.info.id,
+      path: a.path,
+    }),
+  );
+  await waitFor(() =>
+    expect(screen.queryByText(a.info.name)).not.toBeInTheDocument(),
+  );
+  expect(screen.getByText(b.info.name)).toBeVisible();
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  await screen.findByText("按最近打开排序 · 1 个项目");
+  await waitFor(() =>
+    expect(
+      mock.invoke.mock.calls.filter(([command]) => command === "project_list"),
+    ).toHaveLength(2),
+  );
+});
+it("preserves the list and displays errors when removal fails", async () => {
+  const entry = projectEntry("合成响应");
+  mock.invoke.mockImplementation(async (command: string) => {
+    if (command === "project_list") return [entry];
+    if (command === "project_remove") throw new Error("项目目录不可用");
+  });
+  render(<ProjectHome {...homeProps} />);
+  fireEvent.click(
+    await screen.findByRole("button", { name: "从列表移除 合成响应" }),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "确认移除" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("项目目录不可用");
+  expect(screen.getByRole("button", { name: "确认移除" })).toBeEnabled();
+  fireEvent.click(screen.getByRole("button", { name: "取消" }));
+  expect(screen.getByText(entry.info.name)).toBeVisible();
+});
+it("allows missing entries to be removed and prevents duplicate requests while pending", async () => {
+  const entry = { ...projectEntry("缺失项目"), missing: true };
+  let finish!: () => void;
+  let entries = [entry];
+  mock.invoke.mockImplementation((command: string) => {
+    if (command === "project_list") return Promise.resolve(entries);
+    if (command === "project_remove")
+      return new Promise<void>((resolve) => {
+        finish = () => {
+          entries = [];
+          resolve();
+        };
+      });
+  });
+  const { rerender } = render(<ProjectHome {...homeProps} busy />);
+  const remove = await screen.findByRole("button", {
+    name: "从列表移除 缺失项目",
+  });
+  expect(remove).toBeDisabled();
+  expect(screen.getByRole("button", { name: "继续项目" })).toBeDisabled();
+  rerender(<ProjectHome {...homeProps} />);
+  expect(remove).toBeEnabled();
+  fireEvent.click(remove);
+  fireEvent.click(screen.getByRole("button", { name: "确认移除" }));
+  const pending = screen.getByRole("button", { name: "正在移除…" });
+  expect(pending).toBeDisabled();
+  fireEvent.click(pending);
+  expect(screen.getByRole("button", { name: "取消" })).toBeDisabled();
+  expect(
+    mock.invoke.mock.calls.filter(([command]) => command === "project_remove"),
+  ).toHaveLength(1);
+  finish();
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+  );
+  await screen.findByText(/项目列表为空/);
 });
 it("mixes IOC paste and manual inputs and explicitly scans with exact domain policy", async () => {
   mock.invoke.mockImplementation(async (c: string) => {

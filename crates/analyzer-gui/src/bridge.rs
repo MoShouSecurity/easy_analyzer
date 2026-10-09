@@ -1080,6 +1080,21 @@ pub async fn project_list(
     )
 }
 #[tauri::command]
+pub async fn project_remove(state: State<'_, Desktop>, id: String, path: String) -> Rpc<()> {
+    let root = rpc((|| {
+        let s = state.lock()?;
+        if s.busy.is_some() {
+            bail!("请等待当前任务完成");
+        }
+        Ok(s.data_dir.clone())
+    })())?;
+    rpc(tauri::async_runtime::spawn_blocking(move || {
+        ProjectCatalog::open(&root)?.remove(&id, &path)
+    })
+    .await
+    .map_err(|e| e.to_string())?)
+}
+#[tauri::command]
 pub fn project_create(
     app: AppHandle,
     state: State<'_, Desktop>,
