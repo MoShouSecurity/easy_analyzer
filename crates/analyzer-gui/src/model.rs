@@ -1,5 +1,5 @@
 use analyzer_app::{
-    core::{self, Finding, ParseStatus, Record, Severity},
+    core::{self, ParseStatus, Record, Severity},
     *,
 };
 use serde::{Deserialize, Serialize};
@@ -10,6 +10,8 @@ use std::collections::{BTreeMap, HashSet};
 pub enum Screen {
     #[default]
     Import,
+    Projects,
+    Ioc,
     Overview,
     Logs,
     Processes,
@@ -319,11 +321,12 @@ pub struct RunSummary {
 }
 #[derive(Serialize)]
 pub struct ViewResponse {
+    pub project: Option<ProjectStatus>,
     pub session_id: u64,
     pub revision: u64,
     pub overview: SessionOverview,
     pub records: Option<Page<RecordSummary>>,
-    pub findings: Option<Page<Finding>>,
+    pub findings: Option<Page<FindingPreview>>,
     pub flows: Option<Page<FlowSummary>>,
     pub process_rows: Vec<ProcessRow>,
     pub sources: Page<core::Source>,
@@ -336,10 +339,11 @@ pub struct ViewResponse {
 }
 #[derive(Serialize)]
 pub struct DetailResponse {
+    pub note: Option<String>,
     pub session_id: u64,
     pub record: Record,
     pub source: Option<core::Source>,
-    pub related: Vec<Finding>,
+    pub related: Vec<FindingPreview>,
 }
 #[derive(Clone, Serialize)]
 pub struct TaskMessage {
@@ -358,6 +362,8 @@ pub struct TaskMessage {
 }
 #[derive(Serialize)]
 pub struct Bootstrap {
+    pub project: Option<ProjectStatus>,
+    pub filters: Option<serde_json::Value>,
     pub preferences: Preferences,
     pub config: PublicConfig,
     pub config_loaded: bool,

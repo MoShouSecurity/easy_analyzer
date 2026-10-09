@@ -33,6 +33,7 @@ btmp
 
 # Source manifests for the desktop frontend (the general evidence JSON/HTML ignore stays in effect).
 !/crates/analyzer-gui/tauri.conf.json
+!/crates/analyzer-gui/tauri.windows.conf.json
 !/crates/analyzer-gui/capabilities/*.json
 !/crates/analyzer-gui/frontend/package*.json
 !/crates/analyzer-gui/frontend/tsconfig*.json
@@ -42,3 +43,10 @@ btmp
 *.tsbuildinfo
 
 **/__pycache__/
+
+# Private response projects and project catalogs.
+*.eair
+*.eair-journal
+*.eair-wal
+*.eair-shm
+projects.sqlite*

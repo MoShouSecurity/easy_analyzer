@@ -16,14 +16,17 @@ use std::{
 };
 
 static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
+type CachedSelection = ((u64, bool), crate::RecordFilter, RecordSelection);
 
 pub(crate) struct SessionInner {
     pub id: u64,
     pub report: RwLock<AnalysisReport>,
+    pub store: Option<Arc<crate::storage::Database>>,
     pub index: HashMap<String, usize>,
     pub local_suspicious: HashSet<String>,
     pub mutation: Mutex<()>,
     pub protected: Vec<PathBuf>,
+    pub selections: Mutex<Vec<CachedSelection>>,
 }
 
 #[derive(Clone)]
@@ -33,16 +36,27 @@ pub struct AnalysisSession(pub(crate) Arc<SessionInner>);
 pub struct RecordSelection {
     pub(crate) session_id: u64,
     pub(crate) ids: Vec<String>,
+    pub(crate) stored: Option<Arc<crate::storage::StoredSelection>>,
 }
 impl RecordSelection {
+    pub fn try_ids(&self) -> Result<&[String]> {
+        match &self.stored {
+            Some(s) => s.load_ids(),
+            None => Ok(&self.ids),
+        }
+    }
+    pub(crate) fn stored_id(&self, ctx: &ExecutionContext) -> Result<Option<i64>> {
+        self.stored.as_ref().map(|s| s.materialize(ctx)).transpose()
+    }
     pub fn ids(&self) -> &[String] {
-        &self.ids
+        self.try_ids()
+            .expect("筛选存储读取失败；可用 try_ids 获取错误")
     }
     pub fn len(&self) -> usize {
-        self.ids.len()
+        self.stored.as_ref().map_or(self.ids.len(), |s| s.count)
     }
     pub fn is_empty(&self) -> bool {
-        self.ids.is_empty()
+        self.len() == 0
     }
 }
 
@@ -81,17 +95,37 @@ impl AnalysisSession {
         Self(Arc::new(SessionInner {
             id: NEXT_SESSION.fetch_add(1, Ordering::Relaxed),
             report: RwLock::new(report),
+            store: None,
             index,
             local_suspicious,
             mutation: Mutex::new(()),
             protected,
+            selections: Mutex::default(),
         }))
+    }
+    pub(crate) fn from_database(store: Arc<crate::storage::Database>) -> Self {
+        Self(Arc::new(SessionInner {
+            id: NEXT_SESSION.fetch_add(1, Ordering::Relaxed),
+            report: RwLock::new(AnalysisReport::default()),
+            store: Some(store),
+            index: HashMap::new(),
+            local_suspicious: HashSet::new(),
+            mutation: Mutex::new(()),
+            protected: vec![],
+            selections: Mutex::default(),
+        }))
+    }
+    pub fn is_project(&self) -> bool {
+        self.0.store.is_some()
     }
     pub fn id(&self) -> u64 {
         self.0.id
     }
     /// Read without copying the full evidence set. The callback must not mutate this session.
     pub fn with_report<T>(&self, read: impl FnOnce(&AnalysisReport) -> T) -> Result<T> {
+        if let Some(db) = &self.0.store {
+            return Ok(read(&db.report()?));
+        }
         let report = self
             .0
             .report
@@ -100,9 +134,49 @@ impl AnalysisSession {
         Ok(read(&report))
     }
     pub fn record(&self, id: &str) -> Result<Option<Record>> {
+        if let Some(db) = &self.0.store {
+            return crate::storage::Database::record(&*db.lock()?, id);
+        }
         self.with_report(|r| self.0.index.get(id).map(|&i| r.records[i].clone()))
     }
     pub fn select_ids(&self, ids: impl IntoIterator<Item = String>) -> Result<RecordSelection> {
+        if let Some(db) = &self.0.store {
+            let mut c = db.lock()?;
+            let tx = c.transaction()?;
+            tx.execute("INSERT INTO selections(count) VALUES(0)", [])?;
+            let key = tx.last_insert_rowid();
+            let mut n = 0;
+            for id in ids {
+                if !tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM records WHERE id=?1)",
+                    [&id],
+                    |r| r.get::<_, bool>(0),
+                )? {
+                    bail!("证据编号不属于当前会话");
+                }
+                n += tx.execute(
+                    "INSERT OR IGNORE INTO selection_refs VALUES(?1,?2,?3)",
+                    rusqlite::params![key, n as i64, id],
+                )?;
+            }
+            tx.execute(
+                "UPDATE selections SET count=?1 WHERE id=?2",
+                rusqlite::params![n as i64, key],
+            )?;
+            tx.commit()?;
+            return Ok(RecordSelection {
+                session_id: self.id(),
+                ids: vec![],
+                stored: Some(Arc::new(crate::storage::StoredSelection {
+                    db: db.clone(),
+                    id: key,
+                    count: n,
+                    ids: Default::default(),
+                    lazy: None,
+                    materialized: Default::default(),
+                })),
+            });
+        }
         let mut seen = HashSet::new();
         let mut result = vec![];
         for id in ids {
@@ -116,6 +190,7 @@ impl AnalysisSession {
         Ok(RecordSelection {
             session_id: self.id(),
             ids: result,
+            stored: None,
         })
     }
     pub(crate) fn validate_selection(&self, selection: &RecordSelection) -> Result<()> {
@@ -125,6 +200,15 @@ impl AnalysisSession {
         Ok(())
     }
     pub fn query(&self, query: &QueryOptions, ctx: &ExecutionContext) -> Result<RecordSelection> {
+        if self.0.store.is_some() {
+            return self.select_records(
+                &crate::RecordFilter {
+                    query: query.clone(),
+                    ..Default::default()
+                },
+                ctx,
+            );
+        }
         if query.regex && query.expression.is_none() {
             bail!("正则查询需要表达式");
         }
@@ -146,6 +230,7 @@ impl AnalysisSession {
             Ok(RecordSelection {
                 session_id: self.id(),
                 ids,
+                stored: None,
             })
         })?
     }
@@ -158,6 +243,12 @@ impl AnalysisSession {
             self.validate_selection(selection)?;
         }
         let _operation = self.lock_operation(ctx)?;
+        if let Some(db) = &self.0.store {
+            ctx.check()?;
+            let key = selection.map(|s| s.stored_id(ctx)).transpose()?.flatten();
+            crate::storage::Database::set(&*db.lock()?, "query_selection", &key)?;
+            return Ok(());
+        }
         let mut report = self
             .0
             .report
@@ -195,6 +286,22 @@ impl AnalysisSession {
         check_page(limit)?;
         if let Some(selection) = selection {
             self.validate_selection(selection)?;
+        }
+        if let Some(db) = &self.0.store {
+            if let Some(s) = selection.and_then(|s| s.stored.as_ref())
+                && s.lazy.is_some()
+            {
+                return db.read_lazy_page(s, offset, limit, include_payload);
+            }
+            return db.read_page(
+                selection
+                    .map(|s| s.stored_id(&ExecutionContext::default()))
+                    .transpose()?
+                    .flatten(),
+                offset,
+                limit,
+                include_payload,
+            );
         }
         self.with_report(|report| {
             let total = selection.map_or(report.records.len(), |s| s.ids.len());
@@ -241,13 +348,42 @@ impl AnalysisSession {
     }
     pub fn findings(&self, offset: usize, limit: usize) -> Result<Page<Finding>> {
         check_page(limit)?;
+        if let Some(db) = &self.0.store {
+            return db.finding_page(&Default::default(), offset, limit);
+        }
         self.with_report(|r| page_slice(&r.findings, offset, limit))
     }
     pub fn flows(&self, offset: usize, limit: usize) -> Result<Page<NetworkFlow>> {
         check_page(limit)?;
+        if let Some(db) = &self.0.store {
+            let c = db.lock()?;
+            let mut items: Vec<NetworkFlow> = crate::storage::values(
+                &c,
+                "SELECT json FROM flows ORDER BY ordinal LIMIT ?1 OFFSET ?2",
+                rusqlite::params![limit as i64, offset.min(i64::MAX as usize) as i64],
+            )?;
+            for (i, f) in items.iter_mut().enumerate() {
+                let mut s =
+                    c.prepare("SELECT record_id FROM flow_refs WHERE flow_id=?1 ORDER BY ordinal")?;
+                f.evidence_ids = s
+                    .query_map([(offset + i + 1) as i64], |r| r.get(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+            }
+            return Ok(Page {
+                offset,
+                total: crate::storage::scalar(&c, "SELECT COUNT(*) FROM flows")?,
+                items,
+            });
+        }
         self.with_report(|r| page_slice(&r.flows, offset, limit))
     }
     pub fn process_forest(&self) -> Result<core::process::ProcessForest> {
+        if let Some(db) = &self.0.store {
+            return Ok(db
+                .process_forest(&ExecutionContext::default())?
+                .as_ref()
+                .clone());
+        }
         self.with_report(|r| core::process::process_forest(&r.records))
     }
     pub(crate) fn lock_operation(&self, ctx: &ExecutionContext) -> Result<MutexGuard<'_, ()>> {

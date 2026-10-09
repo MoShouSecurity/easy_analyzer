@@ -23,7 +23,7 @@ impl AnalysisInput {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct QueryOptions {
     pub expression: Option<String>,
     pub regex: bool,

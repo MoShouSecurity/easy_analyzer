@@ -8,6 +8,24 @@ use std::collections::BTreeMap;
 mod default_logs;
 type LoginKey = (String, String, String, String);
 
+pub fn compile_query(expression: Option<&str>, regex: bool) -> Result<Option<Regex>> {
+    if regex && expression.is_none() {
+        anyhow::bail!("正则查询需要表达式");
+    }
+    expression
+        .map(|s| {
+            RegexBuilder::new(&if regex {
+                s.to_owned()
+            } else {
+                regex::escape(s)
+            })
+            .case_insensitive(true)
+            .build()
+            .map_err(Into::into)
+        })
+        .transpose()
+}
+
 pub fn query(records: &[Record], expression: &str, regex: bool) -> Result<Vec<String>> {
     query_with_context(records, expression, regex, &ExecutionContext::default())
 }
@@ -82,6 +100,26 @@ fn decoded(s: &str) -> String {
 }
 pub fn analyze(report: &mut AnalysisReport) {
     analyze_with_context(report, &ExecutionContext::default()).expect("uncancelled rules");
+}
+
+/// Consume bounded parsed sources from a cursor. The adapter writes each result before
+/// requesting the next source, so a project never has to reconstruct its complete report.
+/// Source provenance remains intact; cancellation delivers the valid partial source.
+pub fn analyze_cursor_with_context<I>(
+    sources: I,
+    ctx: &ExecutionContext,
+    mut emit: impl FnMut(AnalysisReport) -> Result<()>,
+) -> Result<()>
+where
+    I: IntoIterator<Item = Result<AnalysisReport>>,
+{
+    for source in sources {
+        let mut source = source?;
+        let result = analyze_with_context(&mut source, ctx);
+        emit(source)?;
+        result?;
+    }
+    Ok(())
 }
 
 pub fn analyze_with_context(report: &mut AnalysisReport, ctx: &ExecutionContext) -> Result<()> {

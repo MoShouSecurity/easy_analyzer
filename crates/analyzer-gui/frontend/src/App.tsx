@@ -50,6 +50,7 @@ import {
   statusLabel,
   severityLabel,
   type Screen,
+  type ProjectInfo,
   type Bootstrap,
   type ViewResponse,
   type Filters,
@@ -79,7 +80,15 @@ import { SettingsView } from "./components/SettingsView";
 import { AiHistory } from "./components/AiHistory";
 import { AiLocalSummary } from "./components/AiLocalSummary";
 import { AiEvidenceFilter } from "./components/AiEvidenceFilter";
+import {
+  ProjectHome,
+  ProjectEditor,
+  newProject,
+} from "./components/ProjectView";
+import { IocView } from "./components/IocView";
 const icons = {
+  projects: FolderOpen,
+  ioc: ShieldCheck,
   import: Upload,
   overview: LayoutDashboard,
   logs: FileText,
@@ -90,6 +99,8 @@ const icons = {
   settings: Settings2,
 };
 const hints: Record<Screen, string> = {
+  projects: "每次应急响应独立保存，继续已有项目或新建项目",
+  ioc: "导入、粘贴或手动输入 IOC，在当前项目中查找待核查线索",
   import: "汇集离线证据，开始本地分析",
   overview: "从发现追溯证据，核查每一条线索",
   logs: "完整集合查询 · 保留原始记录",
@@ -149,9 +160,16 @@ interface Bookmark {
   scopeContext: ScopeContext | null;
 }
 export function App() {
+  const [editor, setEditor] = useState<ProjectInfo | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [dirtyOpen, setDirtyOpen] = useState(false);
+  const pendingAction = useRef<(() => void) | null>(null);
+  const afterSave = useRef<(() => void) | null>(null);
+  const projectRef = useRef<Bootstrap["project"]>(null);
+  const guardRef = useRef<(action: () => void) => void>(() => {});
   const [boot, setBoot] = useState<Bootstrap | null>(null),
     [prefs, setPrefs] = useState(initialPreferences),
-    [screen, setScreen] = useState<Screen>("import"),
+    [screen, setScreen] = useState<Screen>("projects"),
     [filters, setFilters] = useState(initialFilters),
     [views, setViews] = useState<Partial<Record<Screen, ViewResponse>>>({}),
     [lastView, setLastView] = useState<ViewResponse | null>(null),
@@ -222,6 +240,7 @@ export function App() {
       ) => Promise<void>
     >(async () => {}),
     qaAiStarted = useRef(false);
+  projectRef.current = boot?.project;
   currentScreen.current = screen;
   currentFilters.current = filters;
   currentFocus.current = focus;
@@ -243,7 +262,7 @@ export function App() {
       commit = true,
     ) => {
       const sid = session.current;
-      if (sid === null) return;
+      if (sid === null || next === "projects" || next === "ioc") return;
       const revision = ++viewRevision.current;
       setLoading(true);
       try {
@@ -263,6 +282,8 @@ export function App() {
           value.session_id !== session.current
         )
           return;
+        if (value.project)
+          setBoot((v) => (v ? { ...v, project: value.project } : v));
         setViews((v) => ({ ...v, [next]: value }));
         setLastView(value);
         setSelection(value.selection);
@@ -356,7 +377,10 @@ export function App() {
             viewRevision.current++;
             detailRevision.current++;
             setViews({});
-            setFilters(initialFilters());
+            setAiFilter(null);
+            setAiPreview(null);
+            setExportPath("");
+            setFilters({ ...initialFilters(), ...fresh.filters });
             setDetail(null);
             setFinding(null);
             setSelectedId(null);
@@ -364,14 +388,37 @@ export function App() {
             setFocus(null);
             setBack([]);
             scopeContext.current = null;
-            setScreen("overview");
-            await refreshRef.current("overview", defaultFilters(), null, false);
+            const next =
+              value.kind === "project_create" ? "import" : "overview";
+            setScreen(next);
+            await refreshRef.current(next, defaultFilters(), null, false);
           } else if (fresh.session_id !== null) {
+            if (value.kind === "import") {
+              setFilters(
+                (old) =>
+                  Object.fromEntries(
+                    Object.entries(old).map(([key, filter]) => [
+                      key,
+                      { ...filter, flow: null },
+                    ]),
+                  ) as Record<Screen, Filters>,
+              );
+              setAiFilter(null);
+              setAiPreview(null);
+              setDetail(null);
+              setFocus(null);
+              setSelectedId(null);
+              setFinding(null);
+              setBack([]);
+              scopeContext.current = null;
+              setRequest((v) => ({ ...v, paths: [] }));
+            }
             await refreshRef.current(
               currentScreen.current,
               currentFilters.current[currentScreen.current],
-              currentFocus.current,
-              evidenceScreen(currentScreen.current) && !currentFocus.current,
+              value.kind === "import" ? null : currentFocus.current,
+              evidenceScreen(currentScreen.current) &&
+                (value.kind === "import" || !currentFocus.current),
             );
           }
           if (
@@ -391,11 +438,19 @@ export function App() {
               api.ai(fresh.session_id!, "suspicious", null, false, preview.id),
             );
           }
+          if (value.kind === "project_save" && value.status === "completed") {
+            const action = afterSave.current;
+            afterSave.current = null;
+            action?.();
+          }
+          if (value.kind === "project_save" && value.status !== "completed")
+            afterSave.current = null;
           if (value.error) setError(value.error);
         });
         const fresh = await api.initialize();
         if (disposed) return;
         setBoot(fresh);
+        if (fresh.qa) setScreen("import");
         setPrefs(fresh.preferences);
         setDraft(draftOf(fresh.config));
         setSelection(fresh.selection);
@@ -432,6 +487,12 @@ export function App() {
           if (taskRef.current) {
             event.preventDefault();
             setCloseOpen(true);
+          } else if (projectRef.current?.dirty) {
+            event.preventDefault();
+            guardRef.current(() => {
+              closing.current = true;
+              void win.destroy();
+            });
           } else {
             closing.current = true;
             try {
@@ -444,7 +505,11 @@ export function App() {
             }
           }
         });
-        if (fresh.inputs.length)
+        if (fresh.inputs.length && !fresh.qa && !fresh.project) {
+          setEditing(false);
+          setEditor(newProject());
+          setScreen("import");
+        } else if (fresh.inputs.length)
           await launch(() =>
             api.import({
               ...initialImport,
@@ -775,6 +840,88 @@ export function App() {
     }
   };
 
+  const updateProject = async () => {
+    const sid = session.current;
+    const fresh = await api.initialize();
+    if (fresh.session_id === sid) setBoot(fresh);
+  };
+  const guarded = (action: () => void) => {
+    if (projectRef.current?.dirty) {
+      pendingAction.current = action;
+      setDirtyOpen(true);
+    } else action();
+  };
+  guardRef.current = guarded;
+  const createProject = () =>
+    guarded(() => {
+      setEditing(false);
+      setEditor(newProject());
+    });
+  const openProject = (path: string) =>
+    guarded(() => void launch(() => api.openProject(path)));
+  const pickProject = async () => {
+    try {
+      const paths = await api.pick("project_open");
+      if (paths.length) openProject(paths[0]);
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+  const saveProject = async (saveAs = false, action?: () => void) => {
+    const sid = session.current;
+    const project = projectRef.current;
+    if (sid === null || !project) return;
+    try {
+      let path = project.path;
+      let overwrite = false;
+      if (saveAs || !path) {
+        const paths = await api.pick("project_save");
+        if (!paths.length) return;
+        path = paths[0];
+        overwrite = true;
+      }
+      afterSave.current = action ?? null;
+      lifecycle.current++;
+      setError(null);
+      const job = await api.saveProject(sid, path!, overwrite);
+      if (!ended.current.has(job.task_id)) setTask(job);
+    } catch (e) {
+      afterSave.current = null;
+      setError(String(e));
+    }
+  };
+  const submitProject = async (info: ProjectInfo) => {
+    if (editing && session.current !== null) {
+      const sid = session.current;
+      const project = await api.editProject(sid, info);
+      if (session.current === sid) setBoot((v) => (v ? { ...v, project } : v));
+    } else {
+      lifecycle.current++;
+      const job = await api.createProject(info);
+      if (!ended.current.has(job.task_id)) setTask(job);
+    }
+    setEditor(null);
+  };
+  useEffect(() => {
+    const sid = boot?.session_id;
+    if (sid == null || !boot?.project || busy) return;
+    let stale = false;
+    const timeout = setTimeout(() => {
+      api
+        .projectFilters(sid, filters)
+        .then((project) => {
+          if (!stale && session.current === sid)
+            setBoot((v) => (v ? { ...v, project } : v));
+        })
+        .catch((e) => {
+          if (!stale) setError(String(e));
+        });
+    }, 500);
+    return () => {
+      stale = true;
+      clearTimeout(timeout);
+    };
+  }, [filters, boot?.session_id, busy]);
   const reset = async () => {
     lifecycle.current++;
     try {
@@ -782,7 +929,7 @@ export function App() {
       session.current = null;
       viewRevision.current++;
       detailRevision.current++;
-      setBoot((v) => (v ? { ...v, session_id: null } : v));
+      setBoot((v) => (v ? { ...v, session_id: null, project: null } : v));
       setViews({});
       setSelectedSource(null);
       setLastView(null);
@@ -795,7 +942,7 @@ export function App() {
       setBack([]);
       scopeContext.current = null;
       setRequest((v) => ({ ...v, paths: [] }));
-      setScreen("import");
+      setScreen("projects");
       setNotice("就绪");
       setNewOpen(false);
     } catch (e) {
@@ -876,7 +1023,7 @@ export function App() {
       size: 53,
       cell: ({ row }) => (
         <span className="mono table-muted">
-          {row.original.evidence_ids.length}
+          {row.original.evidence_count ?? row.original.evidence_ids.length}
         </span>
       ),
     },
@@ -1174,6 +1321,28 @@ export function App() {
       <SourceInspector source={selectedSource} onClose={closeInspector} />
     ) : (
       <Inspector
+        sessionId={boot?.session_id ?? null}
+        onSaveNote={
+          boot?.project
+            ? async (text: string) => {
+                if (!detail) return;
+                const sid = detail.session_id;
+                const record = detail.record.id;
+                try {
+                  const project = await api.note(sid, record, text);
+                  if (session.current === sid) {
+                    setBoot((v) => (v ? { ...v, project } : v));
+                    setDetail((v) =>
+                      v?.record.id === record ? { ...v, note: text } : v,
+                    );
+                    setNotice("证据备注已写入，保存项目后持久保留");
+                  }
+                } catch (e) {
+                  setError(String(e));
+                }
+              }
+            : undefined
+        }
         finding={finding}
         detail={detail}
         loading={detailLoading}
@@ -1209,32 +1378,69 @@ export function App() {
               alt=""
               aria-hidden="true"
             />
-            <strong>Analyzer</strong>
+            <strong>Easy Analyzer</strong>
           </div>
           <div className="toolbar-session">
             <span className="session-symbol">
               <Files size={13} />
             </span>
-            <span>{hasSession ? "证据分析会话" : "新分析"}</span>
+            <button
+              className="toolbar-project"
+              disabled={busy || !boot?.project}
+              onClick={() => {
+                if (boot?.project) {
+                  setEditing(true);
+                  setEditor(boot.project.info);
+                }
+              }}
+            >
+              {boot?.project
+                ? `${boot.project.info.name} · ${boot.project.info.client}${boot.project.dirty ? " *" : ""}`
+                : hasSession
+                  ? "证据分析会话"
+                  : "新项目"}
+            </button>
             <ChevronRight size={12} />
             <span className="toolbar-current">{titles[screen]}</span>
             {hasSession && (
               <span className="session-badge">
                 <span className="status-dot" />
-                本地会话
+                {boot?.project ? "应急响应项目" : "本地会话"}
               </span>
             )}
           </div>
           <div className="toolbar-actions">
+            {boot?.project && (
+              <>
+                <Button
+                  variant="ghost"
+                  disabled={busy}
+                  onClick={() => void saveProject()}
+                >
+                  保存{boot.project.dirty ? " *" : ""}
+                </Button>
+                <Button
+                  variant="ghost"
+                  disabled={busy}
+                  onClick={() => void saveProject(true)}
+                >
+                  另存为
+                </Button>
+              </>
+            )}
             <Button
               variant="ghost"
               disabled={busy}
               onClick={() =>
-                hasSession ? setNewOpen(true) : navigate("import")
+                boot?.qa
+                  ? hasSession
+                    ? setNewOpen(true)
+                    : navigate("import")
+                  : createProject()
               }
             >
               <Plus size={14} />
-              <span>新建分析</span>
+              <span>新建项目</span>
             </Button>
             <Button
               variant="ghost"
@@ -1294,12 +1500,14 @@ export function App() {
             <div className="sidebar-section">工作台</div>
             {screens
               .filter((s) => s !== "settings")
-              .map((s, i) => {
+              .map((s) => {
                 const Icon = icons[s];
                 return (
                   <div key={s}>
-                    {i === 2 && <div className="sidebar-section">证据</div>}
-                    {i === 5 && (
+                    {s === "import" && (
+                      <div className="sidebar-section">证据</div>
+                    )}
+                    {s === "processes" && (
                       <div className="sidebar-section">分析与输出</div>
                     )}
                     <Tooltip text={titles[s]}>
@@ -1329,7 +1537,10 @@ export function App() {
                   </span>
                   <div>
                     <strong>{number(overview?.records || 0)} 条证据</strong>
-                    <span>{overview?.sources || 0} 个来源 · 内存会话</span>
+                    <span>
+                      {overview?.sources || 0} 个来源 ·{" "}
+                      {boot?.project ? ".eair 项目" : "临时会话"}
+                    </span>
                   </div>
                 </div>
               )}
@@ -1417,6 +1628,30 @@ export function App() {
             <div
               className={`page-body ${screen === "ai" ? "ai-page-body" : ""}`}
             >
+              {screen === "projects" && (
+                <ProjectHome
+                  busy={busy}
+                  onNew={createProject}
+                  onOpen={openProject}
+                  onPick={() => void pickProject()}
+                  onError={setError}
+                />
+              )}
+              {screen === "ioc" &&
+                (boot?.project && boot.session_id !== null ? (
+                  <IocView
+                    key={boot.session_id}
+                    sessionId={boot.session_id}
+                    revision={boot.project.revision}
+                    busy={busy}
+                    onTask={launch}
+                    onJump={(id) => void selectRecord(id, true)}
+                    onChanged={updateProject}
+                    onError={setError}
+                  />
+                ) : (
+                  <p>请先新建或打开应急响应项目。</p>
+                ))}
               {screen === "import" && (
                 <ImportView
                   request={request}
@@ -1428,7 +1663,11 @@ export function App() {
                   elevationBusy={elevationBusy}
                   onElevate={() => void requestElevation()}
                   onPick={(k) => void pick(k)}
-                  onStart={() => void launch(() => api.import(request))}
+                  onStart={() => {
+                    if (!boot?.project && !boot?.qa) {
+                      createProject();
+                    } else void launch(() => api.import(request));
+                  }}
                   dragging={dragging}
                 />
               )}
@@ -2142,7 +2381,7 @@ export function App() {
           <span className="status-muted">
             本地工作台
             <span className="status-separator" />
-            内存会话
+            {boot?.project ? "手动保存项目" : "临时会话"}
           </span>
         </footer>
         <Dialog
@@ -2246,6 +2485,57 @@ export function App() {
             onClose={() => setAiFilter(null)}
           />
         )}
+
+        {editor && (
+          <ProjectEditor
+            key={editor.id + String(editing)}
+            info={editor}
+            busy={busy}
+            onClose={() => setEditor(null)}
+            onSave={submitProject}
+          />
+        )}
+        <Dialog
+          open={dirtyOpen}
+          onOpenChange={setDirtyOpen}
+          title="项目有未保存的修改"
+          description="保存当前项目后再切换，或放弃本次未保存的修改。原项目文件保留。"
+        >
+          <div className="dialog-actions">
+            <Button
+              variant="ghost"
+              onClick={() => {
+                pendingAction.current = null;
+                setDirtyOpen(false);
+              }}
+            >
+              返回项目
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setDirtyOpen(false);
+                const action = pendingAction.current;
+                pendingAction.current = null;
+                action?.();
+              }}
+            >
+              放弃修改并继续
+            </Button>
+            <Button
+              onClick={() =>
+                void saveProject(false, () => {
+                  setDirtyOpen(false);
+                  const action = pendingAction.current;
+                  pendingAction.current = null;
+                  action?.();
+                })
+              }
+            >
+              保存并继续
+            </Button>
+          </div>
+        </Dialog>
         <Dialog
           open={newOpen}
           onOpenChange={setNewOpen}

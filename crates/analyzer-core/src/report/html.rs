@@ -130,7 +130,7 @@ fn section(out: &mut String, id: &str, title: &str, subtitle: &str, count: usize
         "<div class=\"section-head\" id=\"{id}\"><div><h2>{title}</h2><p>{subtitle}</p></div><span>{count} 项</span></div>"
     );
 }
-fn script_hash() -> String {
+pub(super) fn script_hash() -> String {
     let digest = Sha256::digest(SCRIPT.as_bytes());
     let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut result = String::new();

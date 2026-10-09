@@ -37,6 +37,141 @@ fn publish(
     Ok(view)
 }
 #[test]
+#[ignore = "set EASY_ANALYZER_BENCH_PROJECT to a local .eair file"]
+fn benchmark_large_project_overview() {
+    use std::time::Instant;
+    let path = std::env::var_os("EASY_ANALYZER_BENCH_PROJECT").expect("project path required");
+    let ctx = ExecutionContext::default();
+    let start = Instant::now();
+    let session = ProjectService::open(Path::new(&path), &ctx).unwrap();
+    println!("open_seconds={:.3}", start.elapsed().as_secs_f64());
+    for n in 1..=2 {
+        let start = Instant::now();
+        let (view, _) = build_view(&session, &request(&session, Screen::Overview), &ctx).unwrap();
+        println!(
+            "overview_{n}_seconds={:.3} records={} diagnostics={}",
+            start.elapsed().as_secs_f64(),
+            view.overview.records,
+            view.diagnostics.total
+        );
+    }
+}
+
+#[test]
+#[ignore = "set EASY_ANALYZER_BENCH_PROJECT to a local .eair file"]
+fn benchmark_large_project_modules() {
+    let path = std::env::var_os("EASY_ANALYZER_BENCH_PROJECT").expect("project path required");
+    let ctx = ExecutionContext::default();
+    let session = ProjectService::open(Path::new(&path), &ctx).unwrap();
+    let mut selections = Vec::new();
+    for screen in [
+        Screen::Overview,
+        Screen::Logs,
+        Screen::Processes,
+        Screen::Network,
+        Screen::Ai,
+        Screen::Reports,
+        Screen::Settings,
+    ] {
+        for n in 0..2 {
+            let mut req = request(&session, screen);
+            req.filters.offset = n * 100;
+            let start = Instant::now();
+            let (view, selection) = build_view(&session, &req, &ctx).unwrap();
+            println!(
+                "screen={screen:?} page={n} seconds={:.3} items={}",
+                start.elapsed().as_secs_f64(),
+                view.records.as_ref().map_or(0, |p| p.items.len())
+            );
+            selections.push(selection);
+            ProjectService::save_view_state(
+                &session,
+                &serde_json::json!({"screen":screen,"offset":req.filters.offset}),
+            )
+            .unwrap();
+        }
+    }
+    let mut req = request(&session, Screen::Reports);
+    req.diagnostic_offset = session
+        .diagnostic_page(0, 1)
+        .unwrap()
+        .total
+        .saturating_sub(50);
+    let start = Instant::now();
+    build_view(&session, &req, &ctx).unwrap();
+    println!(
+        "deep_diagnostics_seconds={:.3}",
+        start.elapsed().as_secs_f64()
+    );
+}
+
+#[test]
+#[ignore = "synthetic 10000-process and 10000-packet module benchmark"]
+fn benchmark_synthetic_modules() {
+    let ctx = ExecutionContext::default();
+    let session = ProjectService::create(ProjectInfo::new("合成模块性能验证", "合成客户")).unwrap();
+    let processes = (0..10000).map(|i| serde_json::json!({"pid":i,"parent_pid":if i==0 {None} else {Some((i-1)/2)},"name":format!("synthetic-process-{i}"),"command":[]})).collect::<Vec<_>>();
+    let fixture =
+        fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/sample.pcap"))
+            .unwrap();
+    let mut packets = fixture[..24].to_vec();
+    for _ in 0..10000 {
+        packets.extend_from_slice(&fixture[24..]);
+    }
+    let start = Instant::now();
+    ProjectService::append(
+        &session,
+        &AnalysisRequest {
+            inputs: vec![
+                AnalysisInput::Bytes {
+                    label: "synthetic-processes.json".into(),
+                    bytes: serde_json::to_vec(&processes).unwrap().into(),
+                },
+                AnalysisInput::Bytes {
+                    label: "synthetic-packets.pcap".into(),
+                    bytes: packets.into(),
+                },
+            ],
+            ..Default::default()
+        },
+        &ctx,
+    )
+    .unwrap();
+    println!(
+        "synthetic_import_seconds={:.3}",
+        start.elapsed().as_secs_f64()
+    );
+    let overview = session.overview(&ctx).unwrap();
+    println!(
+        "synthetic_processes={} packets={}",
+        overview.processes, overview.packets
+    );
+    assert_eq!(overview.processes, 10000);
+    assert!(overview.packets >= 10000);
+    for screen in [
+        Screen::Overview,
+        Screen::Processes,
+        Screen::Network,
+        Screen::Ai,
+        Screen::Reports,
+        Screen::Settings,
+    ] {
+        for n in 0..2 {
+            let mut req = request(&session, screen);
+            req.filters.offset = n * 100;
+            let start = Instant::now();
+            let (view, _) = build_view(&session, &req, &ctx).unwrap();
+            println!(
+                "synthetic_screen={screen:?} page={n} seconds={:.3}",
+                start.elapsed().as_secs_f64()
+            );
+            if screen == Screen::Processes {
+                assert_eq!(view.records.unwrap().total, 10000);
+            }
+        }
+    }
+}
+#[test]
 fn ai_page_excludes_local_findings_without_removing_them_from_session() {
     let session = load(&["auth.log"]);
     let ctx = ExecutionContext::default();
@@ -286,4 +421,56 @@ fn ai_preview_rejects_changed_settings_payload_selection_or_session() {
         session.page(None, 0, 100).unwrap().total
     );
     assert!(take_ai_plan(&mut state, &request).is_err());
+}
+#[test]
+fn database_project_pages_notes_and_stale_views_are_isolated() {
+    let first = ProjectService::create(ProjectInfo::new("合成甲响应", "合成甲客户")).unwrap();
+    let second = ProjectService::create(ProjectInfo::new("合成乙响应", "合成乙客户")).unwrap();
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
+    ProjectService::append(
+        &first,
+        &AnalysisRequest {
+            inputs: vec![
+                AnalysisInput::File(root.join("auth.log")),
+                AnalysisInput::File(root.join("sample.pcap")),
+            ],
+            ..Default::default()
+        },
+        &ExecutionContext::default(),
+    )
+    .unwrap();
+    let (view, selection) = build_view(
+        &first,
+        &request(&first, Screen::Logs),
+        &ExecutionContext::default(),
+    )
+    .unwrap();
+    assert!(view.project.is_some());
+    assert!(!selection.unwrap().is_empty());
+    assert!(view.records.as_ref().unwrap().total > 0);
+    let id = view.records.unwrap().items[0].id.clone();
+    ProjectService::note(&first, &id, "合成备注", &ExecutionContext::default()).unwrap();
+    assert!(ProjectService::read_note(&second, &id).unwrap().is_none());
+    let desktop = Desktop::new(PathBuf::new(), Args::default());
+    {
+        let mut s = desktop.lock().unwrap();
+        s.session = Some(second);
+        s.latest_view = 1;
+    }
+    let (mut stale, selected) = build_view(
+        &first,
+        &request(&first, Screen::Logs),
+        &ExecutionContext::default(),
+    )
+    .unwrap();
+    assert!(
+        commit_view(
+            &desktop,
+            &first,
+            &request(&first, Screen::Logs),
+            &mut stale,
+            selected
+        )
+        .is_err()
+    );
 }

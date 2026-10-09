@@ -14,8 +14,8 @@ use std::{
 
 mod planning;
 mod text;
-pub use planning::{AiPlan, PreparedAi, prepare_with_context};
-pub use text::{evidence_text, system_prompt};
+pub use planning::{AiPlan, PreparedAi, prepare_stream_with_context, prepare_with_context};
+pub use text::{evidence_text, system_prompt, system_prompt_for_scenes};
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -31,6 +31,7 @@ pub struct AiConfig {
     pub batch_bytes: usize,
     /// None preserves legacy byte batching. Some enables context-based planning
     /// and cross-batch synthesis; this is the actual API's shared token limit.
+    #[serde(default)]
     pub context_tokens: Option<usize>,
     pub max_output_tokens: u32,
     /// json_object, json_schema, or none, depending on provider compatibility.
@@ -47,7 +48,7 @@ impl Default for AiConfig {
             api_key_env: String::new(),
             timeout_seconds: 300,
             batch_bytes: 98_304,
-            context_tokens: None,
+            context_tokens: Some(1_000_000),
             max_output_tokens: 65_536,
             response_format: "json_object".into(),
             token_parameter: "max_tokens".into(),
@@ -196,7 +197,7 @@ pub fn evidence_value(record: &Record, include_payload: bool) -> Value {
     }
     v
 }
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct TextEvidence {
     id: String,
     text: String,
@@ -212,6 +213,7 @@ fn batches(
         records,
         &AiConfig {
             batch_bytes: limit,
+            context_tokens: None,
             ..Default::default()
         },
         include_payload,
@@ -399,7 +401,8 @@ pub fn analyze_prepared_with_context(
     let PreparedAi {
         config,
         system,
-        batches,
+        mut batches,
+        spool,
         plan,
         include_payload,
     } = prepared;
@@ -408,7 +411,7 @@ pub fn analyze_prepared_with_context(
         .timeout(Duration::from_secs(config.timeout_seconds))
         .redirect(Policy::none())
         .build()?;
-    let count = batches.len();
+    let count = plan.evidence_batches;
     let mut run = AiRun {
         model: config.model.clone(),
         endpoint: config.endpoint()?.to_string(),
@@ -426,10 +429,15 @@ pub fn analyze_prepared_with_context(
     let mut failed_evidence = vec![];
     let mut neutral_count = 0;
     let mut neutral_preview = vec![];
-    for (i, batch) in batches.into_iter().enumerate() {
+    for i in 0..count {
         if ctx.cancellation.is_cancelled() {
             break;
         }
+        let batch = if let Some(spool) = &spool {
+            spool.batch(i)?
+        } else {
+            std::mem::take(batches.get_mut(i).context("AI 批次计划不一致")?)
+        };
         let user = format!(
             "当前批次 batch: {}\n总证据批次 total_batches: {}\n当前批次记录数: {}\n包含网络原始包及载荷: {}\n\n{}",
             i + 1,

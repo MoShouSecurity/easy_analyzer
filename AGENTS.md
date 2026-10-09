@@ -9,10 +9,11 @@
 
 ## Git 与发布
 
-- 日常修改只提交源码；用户要求同步 GitHub 时推送分支，不创建或推送发布标签，也不手动启动发布 Actions。
-- 只有用户明确要求“打包成 tag”时，才创建并推送 `vX.Y.Z` 发布标签。版本不明确时先确认；标签必须指向已提交的发布源码，并与 `Cargo.toml`、`Cargo.lock` 中的项目版本一致，更新 `CHANGELOG.md`。
-- 发布标签推送后，由 `.github/workflows/ci.yml` 自动构建并发布正式 Releases，等待 Actions 结果后报告成功或失败。不要在普通更新中触发此流程。
+- 日常修改只提交源码；用户要求同步 GitHub 时推送分支。`codex/incident-projects-ioc` 推送自动运行 CI 并上传构建附件，不创建 Release，也不手动启动发布 Actions。
+- 只有用户明确要求打包成 tag 或发布预览安装包时，才创建并推送 `vX.Y.Z` 或 `vX.Y.Z-preview.N` 标签。版本不明确时先确认；标签必须指向已提交的发布源码，并与 `Cargo.toml`、`Cargo.lock` 中的项目版本一致，更新 `CHANGELOG.md`。
+- 标签推送后，由 `.github/workflows/ci.yml` 自动构建发布：正式 tag 发布正式 Releases，预览 tag 发布 Pre-release 且不标记 Latest；等待 Actions 结果后报告成功或失败。不要在普通更新中发布 Release。
 - Releases 附件仅包含 Windows x64、Linux x64、macOS ARM64 各自的 CLI 与 GUI，共六个附件及 `SHA256SUMS`，其中 macOS GUI 为未压缩的 DMG，内含 `Easy Analyzer.app`（`easy-analyzer-gui-macos-arm64.dmg`），其余为独立程序；文件名明确包含 `-cli-` / `-gui-`。不发布 macOS Intel 版，不上传文档、样本、配置或其他压缩包。
+- 预览版保持六个附件及 `SHA256SUMS`，Windows GUI 改为轻量 NSIS 安装包 `easy-analyzer-gui-windows-x64-setup.exe`，缺少 WebView2 时联网下载；正式版附件规则不变。
 - 不覆盖已发布版本；修改后用新的版本标签发布。
 
 ## 本地文件

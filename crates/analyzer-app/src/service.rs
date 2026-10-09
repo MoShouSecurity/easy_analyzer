@@ -13,6 +13,7 @@ use std::{fs, path::PathBuf};
 pub struct PreparedAiAnalysis {
     session: AnalysisSession,
     prepared: core::ai::PreparedAi,
+    revision: Option<u64>,
 }
 impl PreparedAiAnalysis {
     pub fn plan(&self) -> &core::ai::AiPlan {
@@ -162,7 +163,13 @@ impl AnalysisService {
         {
             return Ok(cancelled_report(report, protected));
         }
-        if let Err(error) = core::rules::analyze_with_context(&mut report, ctx) {
+        let parsed = std::mem::take(&mut report);
+        if let Err(error) =
+            core::rules::analyze_cursor_with_context(std::iter::once(Ok(parsed)), ctx, |source| {
+                report = source;
+                Ok(())
+            })
+        {
             if is_cancelled(&error) {
                 return Ok(cancelled_report(report, protected));
             }
@@ -278,6 +285,102 @@ impl AnalysisService {
             session.validate_selection(selection)?;
         }
         ctx.emit(Stage::AiPreparing, None, 0, None);
+        if let Some(db) = &session.0.store {
+            let selection = match options.scope {
+                AiScope::All => session.select_records(&Default::default(), ctx)?,
+                AiScope::Suspicious => session.query(
+                    &crate::QueryOptions {
+                        suspicious: true,
+                        ..Default::default()
+                    },
+                    ctx,
+                )?,
+                AiScope::Matches => {
+                    if let Some(s) = selection {
+                        s.clone()
+                    } else {
+                        let c = db.lock()?;
+                        let id: Option<i64> = crate::storage::Database::get(&c, "query_selection")?;
+                        let id = id.ok_or_else(|| anyhow!("AI matches 需要查询结果"))?;
+                        let count =
+                            c.query_row("SELECT count FROM selections WHERE id=?1", [id], |r| {
+                                r.get::<_, i64>(0)
+                            })? as usize;
+                        RecordSelection {
+                            session_id: session.id(),
+                            ids: vec![],
+                            stored: Some(std::sync::Arc::new(crate::storage::StoredSelection {
+                                db: db.clone(),
+                                id,
+                                count,
+                                ids: Default::default(),
+                                lazy: None,
+                                materialized: Default::default(),
+                            })),
+                        }
+                    }
+                }
+            };
+            let key = selection
+                .stored_id(ctx)?
+                .ok_or_else(|| anyhow!("筛选不可用"))?;
+            let mut scenes = [false; 6];
+            let mut unparsed = false;
+            {
+                let c = db.lock()?;
+                let mut stmt=c.prepare("SELECT DISTINCT r.kind,r.category,r.status FROM records r JOIN selection_refs s ON s.record_id=r.id WHERE s.selection_id=?1")?;
+                let mut rows = stmt.query([key])?;
+                while let Some(r) = rows.next()? {
+                    ctx.check()?;
+                    let kind: String = r.get(0)?;
+                    let category: String = r.get(1)?;
+                    let status: String = r.get(2)?;
+                    unparsed |= status != "\"parsed\"";
+                    let index = match kind.as_str() {
+                        "process" => 3,
+                        "packet" => 4,
+                        _ => match category.as_str() {
+                            "windows_event" => 0,
+                            "utmp" | "wtmp" | "btmp" | "auth_text" => 1,
+                            "web_access" | "web_error" => 2,
+                            _ => 5,
+                        },
+                    };
+                    scenes[index] = true;
+                }
+            }
+            let system =
+                core::ai::system_prompt_for_scenes(scenes, unparsed, options.include_payload);
+            let revision = crate::ProjectService::status(session)?.revision;
+            let prepared = core::ai::prepare_stream_with_context(
+                config,
+                options.include_payload,
+                system,
+                selection.len(),
+                ctx,
+                |visit| {
+                    let mut after = -1;
+                    loop {
+                        let batch =
+                            db.selected_records_after(key, after, 256, options.include_payload)?;
+                        if batch.is_empty() {
+                            break;
+                        }
+                        for (i, r) in batch {
+                            ctx.check()?;
+                            visit(&r)?;
+                            after = i;
+                        }
+                    }
+                    Ok(())
+                },
+            )?;
+            return Ok(PreparedAiAnalysis {
+                session: session.clone(),
+                prepared,
+                revision: Some(revision),
+            });
+        }
         let prepared = session.with_report(|report| {
             let ids = match options.scope {
                 AiScope::All => None,
@@ -302,6 +405,7 @@ impl AnalysisService {
         Ok(PreparedAiAnalysis {
             session: session.clone(),
             prepared,
+            revision: None,
         })
     }
 
@@ -311,6 +415,11 @@ impl AnalysisService {
     ) -> Result<AnalysisOutcome> {
         let session = prepared.session;
         let _operation = session.lock_operation(ctx)?;
+        if let Some(revision) = prepared.revision
+            && crate::ProjectService::status(&session)?.revision != revision
+        {
+            bail!("项目已变化，请重新计算 AI 发送预览");
+        }
         let result = core::ai::analyze_prepared_with_context(prepared.prepared, ctx, |_, _, _| {});
         Self::finish_ai(&session, result, ctx)
     }
@@ -320,6 +429,85 @@ impl AnalysisService {
         result: Result<core::ai::ControlledAiAnalysis>,
         ctx: &ExecutionContext,
     ) -> Result<AnalysisOutcome> {
+        if let Some(db) = &session.0.store {
+            let mut c = db.lock()?;
+            let tx = c.transaction()?;
+            let mut failed = false;
+            let mut cancelled = ctx.cancellation.is_cancelled();
+            match result {
+                Ok(controlled) => {
+                    cancelled |= controlled.cancelled;
+                    let mut analysis = controlled.analysis;
+                    let run = crate::storage::scalar(&tx, "SELECT COUNT(*) FROM ai_runs")? + 1;
+                    for f in &mut analysis.findings {
+                        if run > 1 {
+                            f.id = format!("ai:run:{run}:{}", f.id);
+                        }
+                        crate::storage::Database::insert_finding(&tx, f)?;
+                    }
+                    crate::storage::Database::insert_ai(&tx, &analysis.run)?;
+                    if let Some(summary) = analysis.local_summary.take() {
+                        tx.execute(
+                            "INSERT INTO diagnostics(json) VALUES(?1)",
+                            [crate::storage::packed_json(&core::Diagnostic {
+                                level: DiagnosticLevel::Warning,
+                                source: "AI 本地整理".into(),
+                                position: Some(format!("ai-run:{run}")),
+                                message: summary,
+                            })?],
+                        )?;
+                    }
+                    if let Some(error) = analysis.error {
+                        failed = true;
+                        tx.execute(
+                            "INSERT INTO diagnostics(json) VALUES(?1)",
+                            [crate::storage::packed_json(&core::Diagnostic {
+                                level: DiagnosticLevel::Error,
+                                source: "AI".into(),
+                                position: None,
+                                message: error,
+                            })?],
+                        )?;
+                    }
+                }
+                Err(error) => {
+                    failed = true;
+                    cancelled |= core::execution::is_cancelled(&error);
+                    tx.execute(
+                        "INSERT INTO diagnostics(json) VALUES(?1)",
+                        [crate::storage::packed_json(&core::Diagnostic {
+                            level: DiagnosticLevel::Error,
+                            source: "AI".into(),
+                            position: None,
+                            message: format!("{error:#}"),
+                        })?],
+                    )?;
+                }
+            }
+            if cancelled {
+                tx.execute(
+                    "INSERT INTO diagnostics(json) VALUES(?1)",
+                    [crate::storage::packed_json(&core::Diagnostic {
+                        level: DiagnosticLevel::Error,
+                        source: "AI".into(),
+                        position: None,
+                        message: "AI 分析已取消，保留已接受结果，范围未完成。".into(),
+                    })?],
+                )?;
+            }
+            crate::project::touch(&tx)?;
+            tx.commit()?;
+            return Ok(AnalysisOutcome {
+                session: session.clone(),
+                status: if cancelled {
+                    TaskStatus::Cancelled
+                } else if failed {
+                    TaskStatus::Partial
+                } else {
+                    TaskStatus::Completed
+                },
+            });
+        }
         let mut report = session
             .0
             .report

@@ -184,6 +184,7 @@ impl Server {
             api_key: "fake-test-key".into(),
             model: "mock".into(),
             batch_bytes,
+            context_tokens: None,
             ..Default::default()
         };
         ConfigService::save(&path, &config).unwrap();

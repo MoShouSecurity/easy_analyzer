@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { useState, useEffect } from "react";
 import { Button } from "./ui/button";
+import { api } from "../lib/api";
 import { Tabs } from "./ui/tabs";
 import { basename, bytes } from "../lib/utils";
 import { logFieldLabel } from "../lib/field-labels";
@@ -51,6 +52,8 @@ export function Inspector({
   onJump,
   onFinding,
   onClose,
+  onSaveNote,
+  sessionId,
 }: {
   finding: Finding | null;
   detail: DetailResponse | null;
@@ -58,7 +61,33 @@ export function Inspector({
   onJump: (id: string) => void;
   onFinding: (f: Finding) => void;
   onClose: () => void;
+  onSaveNote?: (text: string) => Promise<void>;
+  sessionId?: number | null;
 }) {
+  const [refs, setRefs] = useState(finding?.evidence_ids ?? []);
+  const [refOffset, setRefOffset] = useState(0);
+  const [refError, setRefError] = useState("");
+  useEffect(() => {
+    setRefs(finding?.evidence_ids ?? []);
+    setRefOffset(0);
+    setRefError("");
+  }, [finding?.id]);
+  const loadRefs = async (offset: number) => {
+    if (!finding || sessionId == null) return;
+    try {
+      const page = await api.findingRefs(sessionId, finding.id, offset);
+      setRefs(page.items);
+      setRefOffset(offset);
+    } catch (e) {
+      setRefError(String(e));
+    }
+  };
+  const [note, setNote] = useState(detail?.note ?? "");
+  const [savingNote, setSavingNote] = useState(false);
+  useEffect(
+    () => setNote(detail?.note ?? ""),
+    [detail?.record.id, detail?.note],
+  );
   const [tab, setTab] = useState("explanation");
   useEffect(
     () => setTab(finding ? "explanation" : "fields"),
@@ -110,10 +139,59 @@ export function Inspector({
                     { value: "fields", label: "字段" },
                     { value: "raw", label: "原文" },
                     { value: "source", label: "来源" },
+                    ...(onSaveNote ? [{ value: "note", label: "备注" }] : []),
                   ]
             }
           />
           <div className="inspector-scroll">
+            {finding &&
+              (tab === "references" || tab === "explanation") &&
+              (finding.evidence_count ?? 0) > 100 && (
+                <div className="project-actions">
+                  <Button
+                    variant="ghost"
+                    disabled={!refOffset}
+                    onClick={() => void loadRefs(Math.max(0, refOffset - 100))}
+                  >
+                    上一页引用
+                  </Button>
+                  <span>
+                    {refOffset + 1}–
+                    {Math.min(refOffset + 100, finding.evidence_count ?? 0)} /{" "}
+                    {finding.evidence_count}
+                  </span>
+                  <Button
+                    variant="ghost"
+                    disabled={refOffset + 100 >= (finding.evidence_count ?? 0)}
+                    onClick={() => void loadRefs(refOffset + 100)}
+                  >
+                    下一页引用
+                  </Button>
+                </div>
+              )}
+            {refError && <p role="alert">{refError}</p>}
+
+            {detail && tab === "note" && onSaveNote && (
+              <div className="evidence-note">
+                <label>
+                  证据备注
+                  <textarea
+                    aria-label="证据备注"
+                    value={note}
+                    onChange={(e) => setNote(e.target.value)}
+                  />
+                </label>
+                <Button
+                  disabled={savingNote}
+                  onClick={() => {
+                    setSavingNote(true);
+                    void onSaveNote(note).finally(() => setSavingNote(false));
+                  }}
+                >
+                  保存备注
+                </Button>
+              </div>
+            )}
             {finding && tab === "explanation" && (
               <>
                 <div className="detail-eyebrow">
@@ -141,9 +219,12 @@ export function Inspector({
                 <div className="detail-section">
                   <h4>
                     <Link2 size={14} />
-                    关联证据 <small>{finding.evidence_ids.length}</small>
+                    关联证据{" "}
+                    <small>
+                      {finding.evidence_count ?? finding.evidence_ids.length}
+                    </small>
                   </h4>
-                  {finding.evidence_ids.map((id) => (
+                  {refs.map((id) => (
                     <button
                       className="evidence-link"
                       key={id}
@@ -163,7 +244,7 @@ export function Inspector({
             {finding && tab === "references" && (
               <>
                 <p className="muted">点击引用跳转并定位原始记录。</p>
-                {finding.evidence_ids.map((id) => (
+                {refs.map((id) => (
                   <button
                     className="evidence-link"
                     key={id}

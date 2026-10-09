@@ -616,3 +616,5 @@ mod tests {
         assert!(page.contains("Content-Security-Policy"));
     }
 }
+
+pub mod stream;

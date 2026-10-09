@@ -31,6 +31,7 @@ pub struct FrozenAi {
     prepared: PreparedAiAnalysis,
 }
 pub struct Inner {
+    _data_directory: Option<tempfile::TempDir>,
     pub session: Option<AnalysisSession>,
     pub epoch: u64,
     pub latest_view: u64,
@@ -54,7 +55,16 @@ pub struct Inner {
 }
 impl Desktop {
     pub fn new(data_dir: PathBuf, args: Args) -> Self {
+        let directory = if args.temporary {
+            tempfile::tempdir().ok()
+        } else {
+            None
+        };
+        let data_dir = directory
+            .as_ref()
+            .map_or(data_dir, |d| d.path().to_path_buf());
         Self(Arc::new(Mutex::new(Inner {
+            _data_directory: directory,
             session: None,
             epoch: 0,
             latest_view: 0,
@@ -117,6 +127,17 @@ fn stage_name(s: Stage) -> String {
 fn bootstrap_value(s: &Inner) -> Bootstrap {
     let (elevated, elevation_error) = crate::elevation::status();
     Bootstrap {
+        project: s
+            .session
+            .as_ref()
+            .filter(|p| p.is_project())
+            .and_then(|p| ProjectService::status(p).ok()),
+        filters: s
+            .session
+            .as_ref()
+            .filter(|p| p.is_project())
+            .and_then(|p| ProjectService::view_state(p).ok())
+            .flatten(),
         preferences: s.prefs.clone(),
         config: PublicConfig::from(&s.config),
         config_loaded: s.config_loaded,
@@ -367,6 +388,11 @@ fn start_session_job(
         message.status = "completed".into();
         message.stage = None;
         if let Ok(mut s) = desktop.lock() {
+            if s.epoch != message.epoch
+                || s.busy.as_ref().is_none_or(|j| j.task_id != message.task_id)
+            {
+                return;
+            }
             match result {
                 Ok(WorkerResult::Outcome(outcome)) => {
                     message.status = status_name(outcome.status);
@@ -374,7 +400,7 @@ fn start_session_job(
                         .session
                         .as_ref()
                         .is_none_or(|old| old.id() != outcome.session.id());
-                    if replace {
+                    if replace || message.kind == "import" || message.kind == "ioc_scan" {
                         s.epoch += 1;
                         s.selection = None;
                         s.selection_info = Default::default();
@@ -425,12 +451,24 @@ pub fn start_import(
 ) -> Rpc<TaskMessage> {
     rpc((|| {
         let request = request.request()?;
+        let session = state.lock()?.session.clone();
+        if session.as_ref().is_none_or(|p| !p.is_project()) && !state.lock()?.args.qa {
+            bail!("请先新建应急响应项目并填写项目名称和客户单位");
+        }
         start_job(
             app,
             state.inner().clone(),
             "import",
             "本地分析",
-            move |ctx| Ok(WorkerResult::Outcome(AnalysisService::load(&request, ctx)?)),
+            move |ctx| {
+                Ok(WorkerResult::Outcome(
+                    if let Some(session) = session.filter(|p| p.is_project()) {
+                        ProjectService::append(&session, &request, ctx)?
+                    } else {
+                        AnalysisService::load(&request, ctx)?
+                    },
+                ))
+            },
         )
     })())
 }
@@ -476,6 +514,11 @@ pub fn build_view(
     let filters = &request.filters;
     let overview = session.overview(ctx)?;
     let mut view = ViewResponse {
+        project: if session.is_project() {
+            Some(ProjectService::status(session)?)
+        } else {
+            None
+        },
         session_id: session.id(),
         revision: request.revision,
         overview,
@@ -485,8 +528,24 @@ pub fn build_view(
         process_rows: vec![],
         sources: session.source_page(request.source_offset, 100)?,
         record_sources: BTreeMap::new(),
-        diagnostics: session.diagnostic_page(request.diagnostic_offset, 50)?,
-        runs: run_summaries(session, request.run_offset, 20, ctx)?,
+        diagnostics: if request.screen == Screen::Reports {
+            session.diagnostic_page(request.diagnostic_offset, 50)?
+        } else {
+            Page {
+                offset: request.diagnostic_offset,
+                total: session.diagnostic_count()?,
+                items: vec![],
+            }
+        },
+        runs: if request.screen == Screen::Ai {
+            run_summaries(session, request.run_offset, 20, ctx)?
+        } else {
+            Page {
+                offset: request.run_offset,
+                total: 0,
+                items: vec![],
+            }
+        },
         outside: false,
         offset: filters.offset,
         selection: Default::default(),
@@ -496,15 +555,16 @@ pub fn build_view(
         if request.screen == Screen::Ai {
             filter.origin = FindingOrigin::Ai;
         }
-        view.findings = Some(session.finding_page(&filter, filters.offset, filters.limit, ctx)?);
+        view.findings =
+            Some(session.finding_previews(&filter, filters.offset, filters.limit, ctx)?);
     }
     let mut valid = None;
     if request.screen.evidence() {
-        let selected = session.select_records(&filters.record_filter(request.screen), ctx)?;
+        let all = session.select_records(&filters.record_filter(request.screen), ctx)?;
         let selected = if let Some(key) = filters.flow {
-            session.flow_selection(key, Some(&selected), ctx)?
+            session.flow_selection(key, Some(&all), ctx)?
         } else {
-            selected
+            all.clone()
         };
         let displayed = if let Some(id) = &request.focus_id {
             if let Some(index) = session.locate_record(Some(&selected), id)? {
@@ -574,7 +634,6 @@ pub fn build_view(
             }
         }
         if request.screen == Screen::Network {
-            let all = session.select_records(&filters.record_filter(request.screen), ctx)?;
             view.flows = Some(session.flow_page(Some(&all), filters.offset, filters.limit, ctx)?);
         }
         if let Some(records) = &view.records {
@@ -598,42 +657,28 @@ fn run_summaries(
     limit: usize,
     ctx: &ExecutionContext,
 ) -> Result<Page<RunSummary>> {
-    session.with_report(|report| -> Result<Page<RunSummary>> {
-        let mut summaries = BTreeMap::new();
-        for (i, diagnostic) in report.diagnostics.iter().enumerate() {
-            ctx.tick(Stage::Query, None, i, Some(report.diagnostics.len()))?;
-            if diagnostic.source == "AI 本地整理"
-                && let Some(position) = &diagnostic.position
-            {
-                summaries.insert(position.as_str(), diagnostic.message.as_str());
-            }
-        }
-        Ok(Page {
-            offset,
-            total: report.ai_runs.len(),
-            items: report
-                .ai_runs
-                .iter()
-                .enumerate()
-                .rev()
-                .skip(offset)
-                .take(limit)
-                .map(|(index, r)| RunSummary {
-                    index,
-                    model: r.model.clone(),
-                    endpoint: r.endpoint.clone(),
-                    batches: r.batches,
-                    completed: r.completed(),
-                    analyzed: r.analyzed_records,
-                    selected: r.selected(),
-                    include_payload: r.include_payload,
-                    local_summary: summaries
-                        .get(format!("ai-run:{}", index + 1).as_str())
-                        .map(|s| (*s).to_owned()),
-                })
-                .collect(),
-        })
-    })?
+    let runs = session.ai_run_header_page(offset, limit)?;
+    let indices: Vec<_> = runs.items.iter().map(|(index, _)| *index).collect();
+    let summaries = session.ai_local_summaries(&indices, ctx)?;
+    Ok(Page {
+        offset,
+        total: runs.total,
+        items: runs
+            .items
+            .iter()
+            .map(|(index, r)| RunSummary {
+                index: *index,
+                model: r.model.clone(),
+                endpoint: r.endpoint.clone(),
+                batches: r.batches,
+                completed: r.completed(),
+                analyzed: r.analyzed_records,
+                selected: r.selected(),
+                include_payload: r.include_payload,
+                local_summary: summaries.get(&format!("ai-run:{}", index + 1)).cloned(),
+            })
+            .collect(),
+    })
 }
 fn commit_view(
     desktop: &Desktop,
@@ -702,7 +747,12 @@ pub async fn get_detail(
             Ok(DetailResponse {
                 session_id,
                 source: session.source(&record.source_id)?,
-                related: session.related_findings(&id)?,
+                related: session.related_finding_previews(&id)?,
+                note: if session.is_project() {
+                    ProjectService::read_note(&session, &id)?
+                } else {
+                    None
+                },
                 record,
             })
         })
@@ -718,22 +768,11 @@ pub async fn get_ai_batches(
     offset: usize,
 ) -> Rpc<Page<core::AiBatch>> {
     let session = rpc(state.session(session_id))?;
-    rpc(tauri::async_runtime::spawn_blocking(move || {
-        session.with_report(|r| -> Result<Page<core::AiBatch>> {
-            let batches = &r
-                .ai_runs
-                .get(run)
-                .ok_or_else(|| anyhow!("运行不存在"))?
-                .batch_results;
-            Ok(Page {
-                offset,
-                total: batches.len(),
-                items: batches.iter().skip(offset).take(10).cloned().collect(),
-            })
-        })?
-    })
-    .await
-    .map_err(|e| e.to_string())?)
+    rpc(
+        tauri::async_runtime::spawn_blocking(move || session.ai_batch_page(run, offset, 10))
+            .await
+            .map_err(|e| e.to_string())?,
+    )
 }
 #[tauri::command]
 pub fn apply_config(state: State<'_, Desktop>, config: ConfigInput) -> Rpc<PublicConfig> {
@@ -968,7 +1007,8 @@ pub async fn start_export(
             ctx.check()?;
             session.set_selection(selection.as_ref(), ctx)?;
             Ok(WorkerResult::Saved(
-                plan.save(&session, Path::new(&config))?.saved_paths,
+                plan.save_with_context(&session, Path::new(&config), ctx)?
+                    .saved_paths,
             ))
         })
     })())
@@ -978,6 +1018,21 @@ pub async fn pick_paths(app: AppHandle, kind: String) -> Rpc<Vec<String>> {
     let result = tauri::async_runtime::spawn_blocking(move || {
         let dialog = app.dialog().file();
         let paths = match kind.as_str() {
+            "project_save" => dialog
+                .add_filter("Easy Analyzer 项目", &["eair"])
+                .set_file_name("响应项目.eair")
+                .blocking_save_file()
+                .into_iter()
+                .collect(),
+            "project_open" => dialog
+                .add_filter("Easy Analyzer 项目", &["eair"])
+                .blocking_pick_file()
+                .into_iter()
+                .collect(),
+            "ioc" => dialog
+                .add_filter("IOC 清单", &["txt", "csv"])
+                .blocking_pick_files()
+                .unwrap_or_default(),
             "inputs" => dialog.blocking_pick_files().unwrap_or_default(),
             "capture" => dialog.blocking_pick_folder().into_iter().collect(),
             "export" => dialog
@@ -996,6 +1051,274 @@ pub async fn pick_paths(app: AppHandle, kind: String) -> Rpc<Vec<String>> {
     .await
     .map_err(|e| e.to_string())?;
     Ok(result)
+}
+
+fn editable_project(state: &Desktop, id: u64) -> Result<AnalysisSession> {
+    let mut s = state.lock()?;
+    if s.busy.is_some() {
+        bail!("请等待当前任务完成");
+    }
+    s.ai_preview = None;
+    if let Some(c) = s.preview_cancel.take() {
+        c.cancel();
+    }
+    s.session
+        .clone()
+        .filter(|p| p.id() == id && p.is_project())
+        .ok_or_else(|| anyhow!("项目已切换，请刷新"))
+}
+#[tauri::command]
+pub async fn project_list(
+    state: State<'_, Desktop>,
+    search: ProjectSearch,
+) -> Rpc<Vec<ProjectEntry>> {
+    let root = rpc(state.lock())?.data_dir.clone();
+    rpc(
+        tauri::async_runtime::spawn_blocking(move || ProjectCatalog::open(&root)?.list(&search))
+            .await
+            .map_err(|e| e.to_string())?,
+    )
+}
+#[tauri::command]
+pub fn project_create(
+    app: AppHandle,
+    state: State<'_, Desktop>,
+    info: ProjectInfo,
+) -> Rpc<TaskMessage> {
+    rpc(start_job(
+        app,
+        state.inner().clone(),
+        "project_create",
+        "新建应急响应项目",
+        move |ctx| {
+            ctx.check()?;
+            Ok(WorkerResult::Outcome(AnalysisOutcome {
+                session: ProjectService::create(info)?,
+                status: TaskStatus::Completed,
+            }))
+        },
+    ))
+}
+#[tauri::command]
+pub fn project_open(app: AppHandle, state: State<'_, Desktop>, path: String) -> Rpc<TaskMessage> {
+    let root = rpc(state.lock())?.data_dir.clone();
+    rpc(start_job(
+        app,
+        state.inner().clone(),
+        "project_open",
+        "打开应急响应项目",
+        move |ctx| {
+            let session = ProjectService::open(Path::new(&path), ctx)?;
+            ProjectCatalog::open(&root)?.register(&session)?;
+            Ok(WorkerResult::Outcome(AnalysisOutcome {
+                session,
+                status: TaskStatus::Completed,
+            }))
+        },
+    ))
+}
+#[tauri::command]
+pub fn project_save(
+    app: AppHandle,
+    state: State<'_, Desktop>,
+    session_id: u64,
+    path: String,
+    overwrite: bool,
+) -> Rpc<TaskMessage> {
+    rpc((|| {
+        let session = state.session(session_id)?;
+        let s = state.lock()?;
+        let root = s.data_dir.clone();
+        let config = PathBuf::from(&s.prefs.config_path);
+        drop(s);
+        start_session_job(
+            app,
+            state.inner().clone(),
+            "project_save",
+            "保存项目",
+            Some(session_id),
+            move |ctx| {
+                let path =
+                    ProjectService::save(&session, Path::new(&path), &config, overwrite, ctx)?;
+                ProjectCatalog::open(&root)?.register(&session)?;
+                Ok(WorkerResult::Saved(vec![path]))
+            },
+        )
+    })())
+}
+#[tauri::command]
+pub async fn project_edit(
+    state: State<'_, Desktop>,
+    session_id: u64,
+    info: ProjectInfo,
+) -> Rpc<ProjectStatus> {
+    let session = rpc(editable_project(state.inner(), session_id))?;
+    rpc(tauri::async_runtime::spawn_blocking(move || {
+        ProjectService::edit(&session, info, &ExecutionContext::default())?;
+        ProjectService::status(&session)
+    })
+    .await
+    .map_err(|e| e.to_string())?)
+}
+#[tauri::command]
+pub async fn project_note(
+    state: State<'_, Desktop>,
+    session_id: u64,
+    record: String,
+    text: String,
+) -> Rpc<ProjectStatus> {
+    let session = rpc(editable_project(state.inner(), session_id))?;
+    rpc(tauri::async_runtime::spawn_blocking(move || {
+        ProjectService::note(&session, &record, &text, &ExecutionContext::default())?;
+        ProjectService::status(&session)
+    })
+    .await
+    .map_err(|e| e.to_string())?)
+}
+#[tauri::command]
+pub async fn project_filters(
+    state: State<'_, Desktop>,
+    session_id: u64,
+    filters: BTreeMap<String, Filters>,
+) -> Rpc<ProjectStatus> {
+    let session = rpc(state.session(session_id))?;
+    rpc(tauri::async_runtime::spawn_blocking(move || {
+        ProjectService::save_view_state(&session, &serde_json::to_value(filters)?)?;
+        ProjectService::status(&session)
+    })
+    .await
+    .map_err(|e| e.to_string())?)
+}
+#[derive(serde::Deserialize)]
+pub struct IocInput {
+    #[serde(default)]
+    pub paths: Vec<String>,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub csv: bool,
+    #[serde(default)]
+    pub value: String,
+    #[serde(default)]
+    pub kind: Option<IocType>,
+    #[serde(default)]
+    pub note: String,
+}
+#[tauri::command]
+pub async fn import_ioc(
+    state: State<'_, Desktop>,
+    session_id: u64,
+    input: IocInput,
+) -> Rpc<IocImport> {
+    let session = rpc(editable_project(state.inner(), session_id))?;
+    rpc(tauri::async_runtime::spawn_blocking(move || {
+        let ctx = ExecutionContext::default();
+        let mut sources: Vec<IocSource> = input
+            .paths
+            .into_iter()
+            .map(|p| IocSource::File(p.into()))
+            .collect();
+        if !input.text.trim().is_empty() {
+            sources.push(IocSource::Text {
+                text: input.text,
+                csv: input.csv,
+                origin: "粘贴清单".into(),
+            });
+        }
+        if !input.value.trim().is_empty() {
+            sources.push(IocSource::Value {
+                value: input.value,
+                kind: input.kind,
+                note: input.note,
+            });
+        }
+        IocService::import(&session, &sources, &ctx)
+    })
+    .await
+    .map_err(|e| e.to_string())?)
+}
+#[derive(serde::Serialize)]
+pub struct IocView {
+    pub status: IocStatus,
+    pub indicators: Page<core::ioc::Indicator>,
+    pub hits: Page<IocHit>,
+}
+#[tauri::command]
+pub async fn get_ioc(
+    state: State<'_, Desktop>,
+    session_id: u64,
+    offset: usize,
+    hit_offset: usize,
+) -> Rpc<IocView> {
+    let session = rpc(state.session(session_id))?;
+    rpc(tauri::async_runtime::spawn_blocking(move || {
+        Ok(IocView {
+            status: IocService::status(&session)?,
+            indicators: IocService::indicators(&session, offset, 100)?,
+            hits: IocService::matches(&session, hit_offset, 100)?,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?)
+}
+#[tauri::command]
+pub async fn ioc_note(
+    state: State<'_, Desktop>,
+    session_id: u64,
+    id: String,
+    note: String,
+) -> Rpc<ProjectStatus> {
+    let session = rpc(editable_project(state.inner(), session_id))?;
+    rpc(tauri::async_runtime::spawn_blocking(move || {
+        IocService::edit_note(&session, &id, &note, &ExecutionContext::default())?;
+        ProjectService::status(&session)
+    })
+    .await
+    .map_err(|e| e.to_string())?)
+}
+#[tauri::command]
+pub fn start_ioc_scan(
+    app: AppHandle,
+    state: State<'_, Desktop>,
+    session_id: u64,
+    include_subdomains: bool,
+) -> Rpc<TaskMessage> {
+    rpc((|| {
+        let session = state.session(session_id)?;
+        start_session_job(
+            app,
+            state.inner().clone(),
+            "ioc_scan",
+            "IOC 匹配",
+            Some(session_id),
+            move |ctx| {
+                let run = IocService::scan(&session, include_subdomains, ctx)?;
+                Ok(WorkerResult::Outcome(AnalysisOutcome {
+                    session,
+                    status: if run.complete {
+                        TaskStatus::Completed
+                    } else {
+                        TaskStatus::Cancelled
+                    },
+                }))
+            },
+        )
+    })())
+}
+
+#[tauri::command]
+pub async fn finding_references(
+    state: State<'_, Desktop>,
+    session_id: u64,
+    id: String,
+    offset: usize,
+) -> Rpc<Page<String>> {
+    let session = rpc(state.session(session_id))?;
+    rpc(
+        tauri::async_runtime::spawn_blocking(move || session.finding_references(&id, offset, 100))
+            .await
+            .map_err(|e| e.to_string())?,
+    )
 }
 
 #[cfg(test)]
