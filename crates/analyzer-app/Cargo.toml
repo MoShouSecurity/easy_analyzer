@@ -12,6 +12,10 @@ anyhow.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 tempfile.workspace = true
-rusqlite = { version = "0.40.2", features = ["bundled", "backup", "hooks"] }
+rusqlite = { version = "0.40.2", features = ["bundled", "backup", "hooks", "functions"] }
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 uuid = { version = "1.27.0", features = ["v4", "serde"] }
 chrono = { workspace = true, features = ["serde"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"

@@ -6,10 +6,24 @@ use crate::{
 use anyhow::Result;
 use rusqlite::{OptionalExtension, params};
 
-pub(crate) struct ProjectCursor<'a>(pub &'a AnalysisSession);
+pub(crate) struct ProjectCursor<'a>(pub &'a AnalysisSession, pub &'a ExecutionContext);
+fn run_header(run: &AiRun) -> AiRun {
+    AiRun {
+        model: run.model.clone(),
+        endpoint: run.endpoint.clone(),
+        batches: run.batches,
+        analyzed_records: run.analyzed_records,
+        include_payload: run.include_payload,
+        completed_batches: run.completed_batches,
+        selected_records: run.selected_records,
+        batch_results: vec![],
+    }
+}
 impl ReportCursor for ProjectCursor<'_> {
     fn metadata(&self) -> Result<Metadata> {
         let db = self.0.0.store.as_ref().expect("project cursor");
+        self.1.check()?;
+        let (errors, warnings) = db.diagnostic_levels(self.1)?;
         let c = db.lock()?;
         let report: AnalysisReport = Database::get(&c, "report")?;
         let info: ProjectInfo = Database::get(&c, "project")?;
@@ -24,14 +38,8 @@ impl ReportCursor for ProjectCursor<'_> {
             ai_findings: scalar(&c, "SELECT COUNT(*) FROM findings WHERE origin LIKE 'ai:%'")?,
             flows: scalar(&c, "SELECT COUNT(*) FROM flows")?,
             referenced: scalar(&c, "SELECT COUNT(DISTINCT record_id) FROM finding_refs")?,
-            errors: scalar(
-                &c,
-                "SELECT COUNT(*) FROM diagnostics WHERE json_extract(json,'$.level')='error'",
-            )?,
-            warnings: scalar(
-                &c,
-                "SELECT COUNT(*) FROM diagnostics WHERE json_extract(json,'$.level')<>'error'",
-            )?,
+            errors,
+            warnings,
             ai_runs: values(&c, "SELECT json FROM ai_runs ORDER BY ordinal", [])?,
             ..Statistics::default()
         };
@@ -120,7 +128,7 @@ impl ReportCursor for ProjectCursor<'_> {
         let mut rows = s.query([run])?;
         while let Some(r) = rows.next()? {
             ctx.check()?;
-            if !visitor(decode(r.get(0)?)?)? {
+            if !visitor(decode(crate::compression::row_text(r, 0)?)?)? {
                 break;
             }
         }
@@ -187,7 +195,7 @@ impl ReportCursor for ProjectCursor<'_> {
                 let mut stmt = c.prepare(&sql)?;
                 stmt.query_map(rusqlite::params_from_iter(parameters), |r| {
                     Ok((
-                        r.get::<_, String>(0)?,
+                        crate::compression::row_text(r, 0)?,
                         r.get::<_, i64>(1)?,
                         r.get::<_, i64>(2)?,
                     ))
@@ -228,15 +236,42 @@ impl AnalysisSession {
                 [],
             )
         } else {
-            self.with_report(|r| {
-                r.ai_runs
+            self.with_report(|r| r.ai_runs.iter().map(run_header).collect())
+        }
+    }
+    /// Latest history headers only; replies are retrieved through `ai_batch_page`.
+    pub fn ai_run_header_page(&self, offset: usize, limit: usize) -> Result<Page<(usize, AiRun)>> {
+        crate::storage::page_limit(limit)?;
+        if let Some(db) = &self.0.store {
+            let c = db.lock()?;
+            let total = scalar(&c, "SELECT COUNT(*) FROM ai_runs")?;
+            let headers: Vec<AiRun> = values(
+                &c,
+                "SELECT json FROM ai_runs ORDER BY ordinal DESC LIMIT ?1 OFFSET ?2",
+                params![limit as i64, offset.min(i64::MAX as usize) as i64],
+            )?;
+            Ok(Page {
+                offset,
+                total,
+                items: headers
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, run)| (total - offset - i - 1, run))
+                    .collect(),
+            })
+        } else {
+            self.with_report(|r| Page {
+                offset,
+                total: r.ai_runs.len(),
+                items: r
+                    .ai_runs
                     .iter()
-                    .map(|run| {
-                        let mut run = run.clone();
-                        run.batch_results.clear();
-                        run
-                    })
-                    .collect()
+                    .enumerate()
+                    .rev()
+                    .skip(offset)
+                    .take(limit)
+                    .map(|(i, run)| (i, run_header(run)))
+                    .collect(),
             })
         }
     }

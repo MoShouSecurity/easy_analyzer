@@ -195,7 +195,7 @@ impl ExportPlan {
         ctx: &crate::ExecutionContext,
     ) -> Result<()> {
         if session.is_project() {
-            let cursor = crate::report_cursor::ProjectCursor(session);
+            let cursor = crate::report_cursor::ProjectCursor(session, ctx);
             match self.format {
                 OutputFormat::Json => report::stream::json(&cursor, out, ctx),
                 OutputFormat::Html => report::stream::html(&cursor, out, ctx),

@@ -56,14 +56,42 @@ easy-analyzer project open response.eair --ioc-stdin --ioc-stdin-csv \
 
 ## 存储与架构
 
-每个 `.eair` 是一个独立 SQLite 文件，应用标识 `0x45414952`、项目 schema 版本 `1`。SQLite 使用 `rusqlite` 的 bundled 特性随程序编译；core 不依赖数据库。参考 [SQLite 应用文件格式](https://www.sqlite.org/appfileformat.html) 和 [Backup API](https://www.sqlite.org/backup.html)。
+每个 `.eair` 是一个独立 SQLite 文件，应用标识 `0x45414952`、项目 schema 版本 `2`，不读取第一版项目。SQLite 使用 `rusqlite` 的 bundled 特性随程序编译；core 不依赖数据库。参考 [SQLite 应用文件格式](https://www.sqlite.org/appfileformat.html) 和 [Backup API](https://www.sqlite.org/backup.html)。
 
+- 较大的原始文本、解析数据、诊断及 AI 回复以独立 zlib 数据块无损压缩，读取当前记录或页面时解压；短文本与压缩后不更小的内容保留原文。相同的证据预览通过完整数据恢复，避免重复存储；PCAP 的去载荷预览仍单独保留。索引和筛选字段保持可直接查询。每个压缩块包含编码标识、原始字节长度和 zlib 校验，损坏的块返回读取错误。
+- 保存快照时回收已删除临时筛选所占的空闲页，取消或失败保留原目标文件；压缩不改变证据 ID、时间、原文、备注、IOC 或报告 schema。
 - `analyzer-app` 的 `ProjectService` 管理工作数据库、资料、追加、保存和验证；`ProjectCatalog` 管理资料/路径/最近打开时间；`IocService` 管理清单与扫描任务。
-- 来源、记录、发现及引用、网络会话及引用、AI 运行及批次、备注、筛选条件、IOC 及命中分表保存。记录 ID、来源、类别、解析状态、协议及关系有索引。记录/查询结果页使用序号游标，关系及报告使用分批游标；文本与正则维持原匹配语义，集合保存于工作表。
+- 来源、记录、发现及引用、网络会话及引用、AI 运行及批次、备注、筛选条件、IOC 及命中分表保存。记录 ID、来源、类别、解析状态、协议及关系有索引。普通分类筛选直接按索引读取，并以当前最大记录序号冻结范围；需要完整编号时才建立工作集合。关键词、正则和可疑项集合保存在工作表，最多缓存四组；追加证据或改变相关发现后重新计算。关系及报告使用分批游标，匹配语义保持一致。
+- 总览按证据修订缓存；修改项目资料、备注、分页位置仍更新项目修订，但不触发全量证据统计。进程树按记录追加刷新，AI 历史仅读取当前页的运行标题和摘要，诊断正文仅在报告页读取；报告错误/警告统计合并为一次查询并复用结果。取消未完成的集合构建会回滚，关闭项目释放缓存和私有数据库。
 - 初次导入逐来源解析、执行规则、写入并释放，保留单来源限制。规则提供来源游标接口，AI 规划逐批读取并冻结到私有磁盘批次，HTML/JSON 编码通过 core 的 `ReportCursor` 输出；常用项目打开、页面、筛选、IOC 和导出路径不调用完整报告兼容物化入口。进程树仍需要进程节点集合，旧 `with_report`/core 公共入口保留原行为。
 - 工作副本位于私有临时目录。手动保存以 Backup API 生成目标目录内临时快照，清除运行时集合，关闭旁文件、同步并原子替换。取消或替换失败保留原目标。打开校验标识、版本、完整结构/索引、数据库及外键、AI 证据引用，不重新解析。
 - 输出路径保护覆盖原证据、配置、IOC 和项目；保存识别原文件 UUID/修订变化。项目没有 AI 配置密钥字段。项目目录仅保存基本资料、路径和最近打开时间，没有证据表；默认位于应用数据目录，可用 `EASY_ANALYZER_DATA_DIR` 指定隔离目录。
 - GUI 后台任务绑定会话和修订，切换清除旧选择/预览；旧任务结果拒绝写入新项目。HTML 显示项目名称、客户及响应时间，JSON 沿用现有报告 schema，完整项目资料和备注留在数据库。
+
+## 验证记录（2026-10-09）
+
+macOS ARM64 本机重新执行全部自动化检查：Rust workspace 103 项测试（含文档测试）、GUI 前端 46 项测试、打包规则 21 项测试通过；Clippy、格式检查和前端生产构建通过。覆盖导入与各类解析器、进程树、网络会话、筛选/定位、IOC、AI 范围/回复/取消、项目资料/保存/恢复/隔离、CLI、报告与设置。新增检查确认普通分页不复制完整证据编号、追加后旧选择保持冻结、缓存最多四组、关闭项目释放数据库、备注/分页偏好不使统计失效，以及 AI 历史分页与诊断缓存刷新。
+
+同一个 2,422,767 条记录、1,468,833 条诊断的压缩项目，使用 release 后端生成视图，每页 100 条；翻页前保存分页偏好，以覆盖实际界面流程。原文件仅供读取，运行中的集合和偏好写入私有副本。单次测量如下：
+
+| 操作 | 优化前 | 优化后 |
+|---|---:|---:|
+| 日志首屏 | 9.614 s | 0.044 s |
+| 日志下一页 | 4.348 s | 0.001 s |
+| 最后 50 条诊断 | 0.117 s | 0.046 s |
+
+独立打开及首页视图生成合计 2.004 s（打开 1.875 s，首页 0.129 s）。另用 10,000 条合成进程和 10,000 个数据包确认有数据的模块：进程树首屏 0.031 s、下一页 0.008 s，网络视图首屏 0.005 s。十万条合成日志还执行了关键词/正则、IOC 全扫描、快照保存/重开和完整 JSON/HTML 导出，命中及记录数量正确。
+
+以上耗时为后端视图生成，不含界面绘制或远端 AI 响应；磁盘缓存和机器负载会影响结果。AI 协议使用本地模拟服务测试，本轮没有实机运行 Windows/Linux 桌面或调用外部 AI 服务。
+
+```sh
+cargo test --offline --locked --release --workspace
+cargo clippy --offline --locked --workspace --all-targets -- -D warnings
+# GUI 前端目录：npm test && npm run build && npm run format:check
+python3 scripts/test_release_assets.py
+EASY_ANALYZER_BENCH_PROJECT=/path/to/new-format.eair cargo test --offline --locked --release -p analyzer-gui benchmark_ -- --ignored --nocapture --test-threads=1
+cargo run --offline --locked --release -p analyzer-app --example project_benchmark -- 100000 256
+```
 
 ## 验证记录（2026-10-05）
 

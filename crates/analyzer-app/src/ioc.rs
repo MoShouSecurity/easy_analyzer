@@ -431,7 +431,7 @@ impl IocService {
             if !run.complete {
                 c.execute(
                     "INSERT INTO diagnostics(json) VALUES(?1)",
-                    [json(&core::Diagnostic {
+                    [crate::storage::packed_json(&core::Diagnostic {
                         level: DiagnosticLevel::Warning,
                         source: "IOC 匹配".into(),
                         position: None,

@@ -14,7 +14,7 @@ pub enum RecordKind {
     Process,
     Packet,
 }
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RecordFilter {
     pub query: QueryOptions,
     pub kind: RecordKind,
@@ -105,7 +105,47 @@ impl AnalysisSession {
         ctx: &ExecutionContext,
     ) -> Result<RecordSelection> {
         if let Some(db) = &self.0.store {
-            return db.select(self.id(), filter, ctx);
+            ctx.check()?;
+            let version = {
+                let c = db.lock()?;
+                if filter.query.suspicious {
+                    (crate::project::content_revision(&c)?, true)
+                } else {
+                    (
+                        c.query_row("SELECT COALESCE(MAX(ordinal),0) FROM records", [], |r| {
+                            r.get::<_, i64>(0).map(|n| n as u64)
+                        })?,
+                        false,
+                    )
+                }
+            };
+            let mut cache = self
+                .0
+                .selections
+                .lock()
+                .map_err(|_| anyhow::anyhow!("筛选缓存不可用"))?;
+            if let Some(index) = cache
+                .iter()
+                .position(|(old, f, _)| old == &version && f == filter)
+            {
+                let entry = cache.remove(index);
+                let selected = entry.2.clone();
+                cache.push(entry);
+                return Ok(selected);
+            }
+            drop(cache);
+            let selected = db.select(self.id(), filter, ctx)?;
+            ctx.check()?;
+            let mut cache = self
+                .0
+                .selections
+                .lock()
+                .map_err(|_| anyhow::anyhow!("筛选缓存不可用"))?;
+            if cache.len() >= 4 {
+                cache.remove(0);
+            }
+            cache.push((version, filter.clone(), selected.clone()));
+            return Ok(selected);
         }
         let selection = self.query(&filter.query, ctx)?;
         self.with_report(|r| {
@@ -238,9 +278,18 @@ impl AnalysisSession {
             if let Some(s) = selection {
                 self.validate_selection(s)?;
             }
+            if let Some(s) = selection.and_then(|s| s.stored.as_ref())
+                && s.lazy.is_some()
+            {
+                return db.locate_lazy_record(s, id);
+            }
+            let key = selection
+                .map(|s| s.stored_id(&ExecutionContext::default()))
+                .transpose()?
+                .flatten();
             let c = db.lock()?;
             use rusqlite::OptionalExtension;
-            let position = if let Some(key) = selection.and_then(RecordSelection::stored_id) {
+            let position = if let Some(key) = key {
                 c.query_row(
                     "SELECT ordinal FROM selection_refs WHERE selection_id=?1 AND record_id=?2",
                     rusqlite::params![key, id],
@@ -282,6 +331,74 @@ impl AnalysisSession {
         }
         self.with_report(|r| page_slice(&r.diagnostics, offset, limit))?
     }
+    pub fn diagnostic_count(&self) -> Result<usize> {
+        if let Some(db) = &self.0.store {
+            return db.diagnostic_count();
+        }
+        self.with_report(|r| r.diagnostics.len())
+    }
+    /// Local AI summaries for the displayed history page, without paging through diagnostics.
+    pub fn ai_local_summaries(
+        &self,
+        run_indices: &[usize],
+        ctx: &ExecutionContext,
+    ) -> Result<BTreeMap<String, String>> {
+        ctx.check()?;
+        if run_indices.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let positions: HashSet<_> = run_indices
+            .iter()
+            .map(|n| format!("ai-run:{}", n + 1))
+            .collect();
+        if let Some(db) = &self.0.store {
+            let c = db.lock()?;
+            let revision: u64 = c.query_row(
+                "SELECT COALESCE(MAX(ordinal),0) FROM diagnostics",
+                [],
+                |r| r.get::<_, i64>(0).map(|n| n as u64),
+            )?;
+            let mut cache = db
+                .ai_summary_cache
+                .lock()
+                .map_err(|_| anyhow::anyhow!("AI 摘要缓存不可用"))?;
+            if cache.as_ref().is_none_or(|(old, _)| *old != revision) {
+                let summaries = crate::storage::with_progress(&c, ctx, || {
+                    let mut stmt = c.prepare("SELECT json_extract(eair_text(json),'$.position'),json_extract(eair_text(json),'$.message') FROM diagnostics WHERE json_extract(eair_text(json),'$.source')='AI 本地整理' AND json_extract(eair_text(json),'$.position') IS NOT NULL ORDER BY ordinal")?;
+                    Ok(stmt
+                        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+                        .collect::<rusqlite::Result<BTreeMap<_, _>>>()?)
+                })?;
+                *cache = Some((revision, summaries));
+            }
+            return Ok(cache
+                .as_ref()
+                .unwrap()
+                .1
+                .iter()
+                .filter(|(position, _)| positions.contains(*position))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect());
+        }
+        self.with_report(|report| {
+            let mut summaries = BTreeMap::new();
+            for (n, diagnostic) in report.diagnostics.iter().enumerate() {
+                ctx.tick(
+                    Stage::Query,
+                    Some("AI 本地整理"),
+                    n,
+                    Some(report.diagnostics.len()),
+                )?;
+                if diagnostic.source == "AI 本地整理"
+                    && let Some(position) = &diagnostic.position
+                    && positions.contains(position)
+                {
+                    summaries.insert(position.clone(), diagnostic.message.clone());
+                }
+            }
+            Ok(summaries)
+        })?
+    }
     pub fn ai_runs(&self) -> Result<Vec<AiRun>> {
         if let Some(db) = &self.0.store {
             return crate::storage::Database::ai(&*db.lock()?);
@@ -322,9 +439,10 @@ impl AnalysisSession {
         if let Some(db) = &self.0.store {
             ctx.check()?;
             return db.flow_page(
-                selection.and_then(RecordSelection::stored_id),
+                selection.and_then(|s| s.stored.as_deref()),
                 offset,
                 limit,
+                ctx,
             );
         }
         let selected = selection.map(|s| s.ids().iter().collect::<HashSet<_>>());
@@ -376,7 +494,7 @@ impl AnalysisSession {
             return db.flow_selection(
                 self.id(),
                 key,
-                selection.and_then(RecordSelection::stored_id),
+                selection.and_then(|s| s.stored.as_deref()),
                 ctx,
             );
         }
@@ -404,20 +522,35 @@ impl AnalysisSession {
     ) -> Result<Vec<ProcessRow>> {
         self.validate_selection(selection)?;
         let forest = if let Some(db) = &self.0.store {
-            core::process::process_forest_with_context(&db.process_records()?, ctx)?
+            db.process_forest(ctx)?
         } else {
-            self.with_report(|r| core::process::process_forest_with_context(&r.records, ctx))??
+            std::sync::Arc::new(
+                self.with_report(|r| core::process::process_forest_with_context(&r.records, ctx))??,
+            )
         };
         let selected = if let Some(db) = &self.0.store {
             let c = db.lock()?;
-            let mut stmt = c.prepare("SELECT r.id FROM records r JOIN selection_refs s ON s.record_id=r.id WHERE r.kind='process' AND s.selection_id=?1")?;
-            stmt.query_map([selection.stored_id()], |r| r.get::<_, String>(0))?
-                .collect::<rusqlite::Result<HashSet<_>>>()?
+            let membership = selection
+                .stored
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("筛选不可用"))?
+                .membership();
+            let mut stmt = c.prepare(&format!(
+                "SELECT r.id FROM records r WHERE r.kind='process' AND {}",
+                membership.predicate
+            ))?;
+            crate::storage::with_progress(&c, ctx, || {
+                Ok(stmt
+                    .query_map(rusqlite::params_from_iter(&membership.arguments), |r| {
+                        r.get::<_, String>(0)
+                    })?
+                    .collect::<rusqlite::Result<HashSet<_>>>()?)
+            })?
         } else {
             selection.ids().iter().cloned().collect::<HashSet<_>>()
         };
         let mut rows = Vec::new();
-        for tree in forest.trees {
+        for tree in &forest.trees {
             let nodes = tree
                 .nodes
                 .iter()

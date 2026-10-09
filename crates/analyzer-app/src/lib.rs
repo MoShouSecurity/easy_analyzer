@@ -19,6 +19,7 @@
 //! # let _ = first_page;
 //! # Ok(()) }
 //! ```
+mod compression;
 pub mod config;
 pub mod export;
 pub mod ioc;

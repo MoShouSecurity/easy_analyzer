@@ -52,6 +52,8 @@ dependencies = [
  "analyzer-core",
  "anyhow",
  "chrono",
+ "flate2",
+ "libc",
  "rusqlite",
  "serde",
  "serde_json",

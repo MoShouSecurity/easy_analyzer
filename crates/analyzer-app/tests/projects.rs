@@ -534,3 +534,224 @@ fn mixed_ioc_inputs_notes_and_cancel_coverage() {
     drop(changed);
     assert!(ProjectService::open(&p, &ctx()).is_err());
 }
+
+#[test]
+fn overview_cache_refreshes_after_append_and_ioc_changes() {
+    let session = create();
+    append(&session, "a", "example.com\nsecond line");
+    let first = session.overview(&ctx()).unwrap();
+    assert_eq!(first.records, 2);
+    assert_eq!(
+        serde_json::to_value(&first).unwrap(),
+        serde_json::to_value(session.overview(&ctx()).unwrap()).unwrap()
+    );
+    append(&session, "b", "example.com");
+    let second = session.overview(&ctx()).unwrap();
+    assert_eq!(second.records, 3);
+    assert_eq!(second.sources, 2);
+    assert_eq!(second.logs, 3);
+    assert_eq!(second.parse_counts.iter().sum::<usize>(), 3);
+    IocService::add_value(&session, "example.com", None, "", &ctx()).unwrap();
+    IocService::scan(&session, true, &ctx()).unwrap();
+    let third = session.overview(&ctx()).unwrap();
+    assert!(third.local_findings > second.local_findings);
+    assert!(third.suspicious > second.suspicious);
+}
+
+#[test]
+fn open_snapshots_are_independent_and_include_uncheckpointed_wal() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("snapshot.eair");
+    let session = create();
+    append(&session, "a", "first evidence");
+    ProjectService::save(&session, &path, Path::new("config"), false, &ctx()).unwrap();
+    let original = std::fs::read(&path).unwrap();
+    let a = ProjectService::open(&path, &ctx()).unwrap();
+    let b = ProjectService::open(&path, &ctx()).unwrap();
+    let id = a.page(None, 0, 1).unwrap().items[0].id.clone();
+    ProjectService::note(&a, &id, "only in working copy A", &ctx()).unwrap();
+    append(&a, "new", "second evidence");
+    assert_eq!(a.overview(&ctx()).unwrap().records, 2);
+    assert_eq!(b.overview(&ctx()).unwrap().records, 1);
+    assert_eq!(ProjectService::read_note(&b, &id).unwrap(), None);
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+
+    let c = rusqlite::Connection::open(&path).unwrap();
+    c.execute_batch("PRAGMA journal_mode=WAL;PRAGMA wal_autocheckpoint=0;")
+        .unwrap();
+    let diagnostic = serde_json::to_string(&core::Diagnostic {
+        source: "snapshot regression".into(),
+        position: None,
+        level: DiagnosticLevel::Warning,
+        message: "committed WAL evidence".into(),
+    })
+    .unwrap();
+    c.execute("INSERT INTO diagnostics(json) VALUES(?1)", [diagnostic])
+        .unwrap();
+    let reopened = ProjectService::open(&path, &ctx()).unwrap();
+    let diagnostics = reopened.diagnostic_page(0, 100).unwrap();
+    assert!(
+        diagnostics
+            .items
+            .iter()
+            .any(|d| d.message == "committed WAL evidence")
+    );
+    assert!(!ProjectService::status(&reopened).unwrap().dirty);
+}
+
+#[test]
+fn ai_summary_lookup_is_bounded_cached_and_keeps_latest_message() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("summaries.eair");
+    let session = create();
+    ProjectService::save(&session, &path, Path::new("config"), false, &ctx()).unwrap();
+    let c = rusqlite::Connection::open(&path).unwrap();
+    for (source, position, message) in [
+        ("parser", "line:1", "unrelated"),
+        ("AI 本地整理", "ai-run:1", "old"),
+        ("AI 本地整理", "ai-run:2", "second"),
+        ("AI 本地整理", "ai-run:1", "latest"),
+    ] {
+        let diagnostic = serde_json::to_string(&core::Diagnostic {
+            source: source.into(),
+            position: Some(position.into()),
+            level: DiagnosticLevel::Warning,
+            message: message.into(),
+        })
+        .unwrap();
+        c.execute("INSERT INTO diagnostics(json) VALUES(?1)", [diagnostic])
+            .unwrap();
+    }
+    drop(c);
+    let reopened = ProjectService::open(&path, &ctx()).unwrap();
+    assert!(reopened.ai_local_summaries(&[], &ctx()).unwrap().is_empty());
+    let first = reopened.ai_local_summaries(&[0], &ctx()).unwrap();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first["ai-run:1"], "latest");
+    assert_eq!(
+        reopened.ai_local_summaries(&[1], &ctx()).unwrap()["ai-run:2"],
+        "second"
+    );
+    let cancelled = CancellationToken::default();
+    cancelled.cancel();
+    assert!(
+        reopened
+            .ai_local_summaries(&[0], &ExecutionContext::new(cancelled, |_| {}))
+            .is_err()
+    );
+    assert_eq!(reopened.ai_local_summaries(&[0], &ctx()).unwrap(), first);
+}
+
+#[test]
+fn empty_ai_history_does_not_read_unrequested_diagnostics() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("no-ai.eair");
+    let session = create();
+    ProjectService::save(&session, &path, Path::new("config"), false, &ctx()).unwrap();
+    let c = rusqlite::Connection::open(&path).unwrap();
+    c.execute(
+        "INSERT INTO diagnostics(json) VALUES('invalid diagnostic JSON')",
+        [],
+    )
+    .unwrap();
+    drop(c);
+    let reopened = ProjectService::open(&path, &ctx()).unwrap();
+    assert!(reopened.diagnostic_page(0, 1).is_err());
+    assert!(reopened.ai_run_headers().unwrap().is_empty());
+    assert!(reopened.ai_local_summaries(&[], &ctx()).unwrap().is_empty());
+}
+
+#[test]
+fn compressed_project_preserves_unicode_records_queries_notes_and_reports() {
+    let session = create();
+    let lines = (0..300)
+        .map(|i| {
+            format!(
+                "证据编号 {i} {} example.com",
+                "相同业务日志，保持原文；".repeat(40)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    append(&session, "compressed-unicode", &lines);
+    let id = session.page(None, 0, 1).unwrap().items[0].id.clone();
+    ProjectService::note(&session, &id, "备注完整保留", &ctx()).unwrap();
+    IocService::add_value(&session, "example.com", None, "域名 IOC", &ctx()).unwrap();
+    IocService::scan(&session, true, &ctx()).unwrap();
+    let snapshot = |session: &AnalysisSession| {
+        let mut report = Vec::new();
+        ExportPlan {
+            format: OutputFormat::Json,
+            ..Default::default()
+        }
+        .write_primary(session, &mut report, &ctx())
+        .unwrap();
+        report
+    };
+    let before = snapshot(&session);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("compressed.eair");
+    ProjectService::save(&session, &path, Path::new("config"), false, &ctx()).unwrap();
+    let c = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(
+        c.pragma_query_value(None, "user_version", |r| r.get::<_, i32>(0))
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        c.query_row(
+            "SELECT COUNT(*) FROM records WHERE typeof(raw)='blob' AND preview=''",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        300
+    );
+    drop(c);
+    let reopened = ProjectService::open(&path, &ctx()).unwrap();
+    assert_eq!(before, snapshot(&reopened));
+    assert_eq!(
+        ProjectService::read_note(&reopened, &id).unwrap().unwrap(),
+        "备注完整保留"
+    );
+    assert_eq!(IocService::matches(&reopened, 0, 100).unwrap().total, 300);
+    assert_eq!(
+        reopened
+            .query(
+                &QueryOptions {
+                    expression: Some("证据编号 299".into()),
+                    ..Default::default()
+                },
+                &ctx()
+            )
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        reopened.page_metadata(None, 200, 100).unwrap().items.len(),
+        100
+    );
+    assert_eq!(
+        reopened.record(&id).unwrap().unwrap().raw,
+        session.record(&id).unwrap().unwrap().raw
+    );
+}
+
+#[test]
+fn previous_project_format_is_rejected_before_loading_evidence() {
+    let session = create();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("unsupported.eair");
+    ProjectService::save(&session, &path, Path::new("config"), false, &ctx()).unwrap();
+    let c = rusqlite::Connection::open(&path).unwrap();
+    c.pragma_update(None, "user_version", 1).unwrap();
+    drop(c);
+    assert!(
+        ProjectService::open(&path, &ctx())
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("不支持该项目文件版本")
+    );
+}

@@ -109,7 +109,32 @@ fn db(session: &AnalysisSession) -> Result<&Arc<Database>> {
         .ok_or_else(|| anyhow!("当前会话不是应急响应项目"))
 }
 pub(crate) fn touch(c: &Connection) -> Result<()> {
+    touch_revision(c, true)
+}
+fn touch_view(c: &Connection) -> Result<()> {
+    touch_revision(c, false)
+}
+pub(crate) fn content_revision(c: &Connection) -> Result<u64> {
+    let value: Option<String> = c
+        .query_row(
+            "SELECT value FROM metadata WHERE key='content_revision'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    match value {
+        Some(value) => crate::storage::decode(value),
+        None => Database::get(c, "revision"),
+    }
+}
+fn touch_revision(c: &Connection, content_changed: bool) -> Result<()> {
     let rev: u64 = Database::get(c, "revision")?;
+    let content = content_revision(c)?;
+    Database::set(
+        c,
+        "content_revision",
+        &(content + u64::from(content_changed)),
+    )?;
     Database::set(c, "revision", &(rev + 1))?;
     let mut info: ProjectInfo = Database::get(c, "project")?;
     info.updated_at = Local::now().to_rfc3339();
@@ -136,7 +161,37 @@ fn copy(source: &Connection, target: &mut Connection, ctx: &ExecutionContext) ->
     }
     Ok(())
 }
+#[cfg(target_os = "macos")]
+fn clone_snapshot(
+    file: &fs::File,
+    path: &Path,
+    target: &Path,
+    source: &Connection,
+) -> Result<bool> {
+    use std::{
+        ffi::CString,
+        os::{
+            fd::AsRawFd,
+            unix::{ffi::OsStrExt, fs::MetadataExt},
+        },
+    };
+    // Hold a SQLite read transaction while cloning; WAL snapshots require the Backup API.
+    let mode: String = source.pragma_query_value(None, "journal_mode", |r| r.get(0))?;
+    if mode != "delete" {
+        return Ok(false);
+    }
+    let original = file.metadata()?;
+    let current = fs::metadata(path)?;
+    if original.dev() != current.dev() || original.ino() != current.ino() {
+        bail!("项目文件在打开期间已被替换，请重试");
+    }
+    let target = CString::new(target.as_os_str().as_bytes())?;
+    // SAFETY: file owns a live descriptor; target is a valid NUL-terminated path.
+    // fclonefileat creates an independent inode with copy-on-write data on APFS.
+    Ok(unsafe { libc::fclonefileat(file.as_raw_fd(), libc::AT_FDCWD, target.as_ptr(), 0) } == 0)
+}
 fn validate_file(c: &Connection, ctx: &ExecutionContext) -> Result<ProjectInfo> {
+    crate::compression::register(c)?;
     c.execute_batch("PRAGMA trusted_schema=OFF;")?;
     if c.pragma_query_value(None, "application_id", |r| r.get::<_, i32>(0))? != APP_ID {
         bail!("这不是 Easy Analyzer 项目文件");
@@ -211,7 +266,12 @@ fn validate_file(c: &Connection, ctx: &ExecutionContext) -> Result<ProjectInfo> 
     if structure(c)? != structure(&expected)? {
         bail!("项目表结构或索引不符合 schema 版本");
     }
-    if c.query_row("SELECT EXISTS(SELECT 1 FROM ai_batches b,json_each(b.json,'$.evidence_ids') e LEFT JOIN records r ON r.id=e.value WHERE r.id IS NULL)",[],|r|r.get::<_,bool>(0))?{bail!("AI 历史引用不存在的证据");}
+    let invalid_ai = crate::storage::with_progress(c, ctx, || {
+        Ok(c.query_row("SELECT EXISTS(SELECT 1 FROM ai_batches b,json_each(eair_text(b.json),'$.evidence_ids') e LEFT JOIN records r ON r.id=e.value WHERE r.id IS NULL)",[],|r|r.get::<_,bool>(0))?)
+    })?;
+    if invalid_ai {
+        bail!("AI 历史引用不存在的证据");
+    }
     let info: ProjectInfo = Database::get(c, "project")?;
     info.validate()?;
     let _: u64 = Database::get(c, "revision")?;
@@ -241,17 +301,52 @@ impl ProjectService {
         Ok(AnalysisSession::from_database(store))
     }
     pub fn open(path: &Path, ctx: &ExecutionContext) -> Result<AnalysisSession> {
+        ctx.check()?;
+        #[cfg(target_os = "macos")]
+        let file = fs::File::open(path).context("无法打开项目文件")?;
         let source = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .context("无法打开项目文件")?;
-        validate_file(&source, ctx)?;
-        let store = Database::new()?;
+        let snapshot = source.unchecked_transaction()?;
+        ctx.emit(
+            core::execution::Stage::Reading,
+            Some("项目完整性校验"),
+            0,
+            None,
+        );
+        validate_file(&snapshot, ctx)?;
+        ctx.emit(core::execution::Stage::Query, Some("项目统计"), 0, None);
+        // Validation has just read the source pages. Compute once here so the first
+        // view does not reread cold APFS clone pages, then cache the same snapshot.
+        let overview = crate::storage::with_progress(&snapshot, ctx, || {
+            Database::compute_overview(&snapshot, ctx)
+        })?;
+        ctx.check()?;
+        let directory = tempfile::tempdir()?;
+        let working = directory.path().join("working.sqlite");
+        #[cfg(target_os = "macos")]
+        let cloned = clone_snapshot(&file, path, &working, &snapshot)?;
+        #[cfg(not(target_os = "macos"))]
+        let cloned = false;
+        if !cloned && working.exists() {
+            fs::remove_file(&working)?;
+        }
+        let mut c = Connection::open(&working)?;
+        if !cloned {
+            copy(&snapshot, &mut c, ctx)?;
+        }
+        ctx.check()?;
+        let store = Database::from_connection(c, directory);
         {
-            let mut c = store.lock()?;
-            copy(&source, &mut c, ctx)?;
+            let c = store.lock()?;
             Database::configure(&c)?;
             c.execute_batch("DELETE FROM selections;")?;
             Database::set(&c, "query_selection", &Option::<i64>::None)?;
             let rev: u64 = Database::get(&c, "revision")?;
+            *store
+                .overview_cache
+                .lock()
+                .map_err(|_| anyhow!("项目统计缓存不可用"))? =
+                Some((content_revision(&c)?, overview));
             Database::set(&c, "saved_revision", &Some(rev))?;
             Database::set(
                 &c,
@@ -289,7 +384,7 @@ impl ProjectService {
         }
         info.created_at = old.created_at;
         Database::set(c, "project", &info)?;
-        touch(c)?;
+        touch_view(c)?;
         tx.commit()?;
         Ok(())
     }
@@ -315,7 +410,7 @@ impl ProjectService {
         } else {
             c.execute("INSERT INTO notes VALUES(?1,?2) ON CONFLICT(record_id) DO UPDATE SET text=excluded.text",params![record,text])?;
         }
-        touch(c)?;
+        touch_view(c)?;
         tx.commit()?;
         Ok(())
     }
@@ -346,7 +441,7 @@ impl ProjectService {
             .optional()?;
         if old.as_ref() != Some(&value) {
             c.execute("INSERT INTO view_state VALUES('filters',?1) ON CONFLICT(key) DO UPDATE SET json=excluded.json",[value])?;
-            touch(&c)?;
+            touch_view(&c)?;
         }
         Ok(())
     }
@@ -374,7 +469,7 @@ impl ProjectService {
             .optional()?;
         if old.as_ref() != Some(&encoded) {
             tx.execute("INSERT INTO view_state VALUES('cli_query',?1) ON CONFLICT(key) DO UPDATE SET json=excluded.json",[encoded])?;
-            touch(&tx)?;
+            touch_view(&tx)?;
         }
         tx.commit()?;
         Ok(())
@@ -434,7 +529,7 @@ impl ProjectService {
                 touch(&c)?;
                 c.execute(
                     "INSERT INTO diagnostics(json) VALUES(?1)",
-                    [json(&core::Diagnostic {
+                    [crate::storage::packed_json(&core::Diagnostic {
                         level: DiagnosticLevel::Error,
                         source: "项目导入".into(),
                         position: None,
@@ -501,6 +596,9 @@ impl ProjectService {
             dest.execute_batch("DELETE FROM selections;DELETE FROM metadata WHERE key IN ('query_selection','path','saved_revision');PRAGMA journal_mode=DELETE;")?;
             Database::set(&dest, "saved_revision", &Some(status.revision))?;
             Database::set(&dest, "path", &Option::<String>::None)?;
+            if dest.pragma_query_value(None, "freelist_count", |r| r.get::<_, i64>(0))? > 0 {
+                crate::storage::with_progress(&dest, ctx, || Ok(dest.execute_batch("VACUUM;")?))?;
+            }
         }
         temporary.as_file().sync_all()?;
         ctx.check()?;

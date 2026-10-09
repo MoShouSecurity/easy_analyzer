@@ -16,6 +16,7 @@ use std::{
 };
 
 static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
+type CachedSelection = ((u64, bool), crate::RecordFilter, RecordSelection);
 
 pub(crate) struct SessionInner {
     pub id: u64,
@@ -25,6 +26,7 @@ pub(crate) struct SessionInner {
     pub local_suspicious: HashSet<String>,
     pub mutation: Mutex<()>,
     pub protected: Vec<PathBuf>,
+    pub selections: Mutex<Vec<CachedSelection>>,
 }
 
 #[derive(Clone)]
@@ -43,8 +45,8 @@ impl RecordSelection {
             None => Ok(&self.ids),
         }
     }
-    pub(crate) fn stored_id(&self) -> Option<i64> {
-        self.stored.as_ref().map(|s| s.id)
+    pub(crate) fn stored_id(&self, ctx: &ExecutionContext) -> Result<Option<i64>> {
+        self.stored.as_ref().map(|s| s.materialize(ctx)).transpose()
     }
     pub fn ids(&self) -> &[String] {
         self.try_ids()
@@ -98,6 +100,7 @@ impl AnalysisSession {
             local_suspicious,
             mutation: Mutex::new(()),
             protected,
+            selections: Mutex::default(),
         }))
     }
     pub(crate) fn from_database(store: Arc<crate::storage::Database>) -> Self {
@@ -109,6 +112,7 @@ impl AnalysisSession {
             local_suspicious: HashSet::new(),
             mutation: Mutex::new(()),
             protected: vec![],
+            selections: Mutex::default(),
         }))
     }
     pub fn is_project(&self) -> bool {
@@ -168,6 +172,8 @@ impl AnalysisSession {
                     id: key,
                     count: n,
                     ids: Default::default(),
+                    lazy: None,
+                    materialized: Default::default(),
                 })),
             });
         }
@@ -194,9 +200,8 @@ impl AnalysisSession {
         Ok(())
     }
     pub fn query(&self, query: &QueryOptions, ctx: &ExecutionContext) -> Result<RecordSelection> {
-        if let Some(db) = &self.0.store {
-            return db.select(
-                self.id(),
+        if self.0.store.is_some() {
+            return self.select_records(
                 &crate::RecordFilter {
                     query: query.clone(),
                     ..Default::default()
@@ -240,11 +245,8 @@ impl AnalysisSession {
         let _operation = self.lock_operation(ctx)?;
         if let Some(db) = &self.0.store {
             ctx.check()?;
-            crate::storage::Database::set(
-                &*db.lock()?,
-                "query_selection",
-                &selection.and_then(RecordSelection::stored_id),
-            )?;
+            let key = selection.map(|s| s.stored_id(ctx)).transpose()?.flatten();
+            crate::storage::Database::set(&*db.lock()?, "query_selection", &key)?;
             return Ok(());
         }
         let mut report = self
@@ -286,8 +288,16 @@ impl AnalysisSession {
             self.validate_selection(selection)?;
         }
         if let Some(db) = &self.0.store {
+            if let Some(s) = selection.and_then(|s| s.stored.as_ref())
+                && s.lazy.is_some()
+            {
+                return db.read_lazy_page(s, offset, limit, include_payload);
+            }
             return db.read_page(
-                selection.and_then(RecordSelection::stored_id),
+                selection
+                    .map(|s| s.stored_id(&ExecutionContext::default()))
+                    .transpose()?
+                    .flatten(),
                 offset,
                 limit,
                 include_payload,
@@ -369,7 +379,10 @@ impl AnalysisSession {
     }
     pub fn process_forest(&self) -> Result<core::process::ProcessForest> {
         if let Some(db) = &self.0.store {
-            return Ok(core::process::process_forest(&db.process_records()?));
+            return Ok(db
+                .process_forest(&ExecutionContext::default())?
+                .as_ref()
+                .clone());
         }
         self.with_report(|r| core::process::process_forest(&r.records))
     }

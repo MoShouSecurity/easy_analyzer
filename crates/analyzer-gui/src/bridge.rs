@@ -528,8 +528,24 @@ pub fn build_view(
         process_rows: vec![],
         sources: session.source_page(request.source_offset, 100)?,
         record_sources: BTreeMap::new(),
-        diagnostics: session.diagnostic_page(request.diagnostic_offset, 50)?,
-        runs: run_summaries(session, request.run_offset, 20, ctx)?,
+        diagnostics: if request.screen == Screen::Reports {
+            session.diagnostic_page(request.diagnostic_offset, 50)?
+        } else {
+            Page {
+                offset: request.diagnostic_offset,
+                total: session.diagnostic_count()?,
+                items: vec![],
+            }
+        },
+        runs: if request.screen == Screen::Ai {
+            run_summaries(session, request.run_offset, 20, ctx)?
+        } else {
+            Page {
+                offset: request.run_offset,
+                total: 0,
+                items: vec![],
+            }
+        },
         outside: false,
         offset: filters.offset,
         selection: Default::default(),
@@ -544,11 +560,11 @@ pub fn build_view(
     }
     let mut valid = None;
     if request.screen.evidence() {
-        let selected = session.select_records(&filters.record_filter(request.screen), ctx)?;
+        let all = session.select_records(&filters.record_filter(request.screen), ctx)?;
         let selected = if let Some(key) = filters.flow {
-            session.flow_selection(key, Some(&selected), ctx)?
+            session.flow_selection(key, Some(&all), ctx)?
         } else {
-            selected
+            all.clone()
         };
         let displayed = if let Some(id) = &request.focus_id {
             if let Some(index) = session.locate_record(Some(&selected), id)? {
@@ -618,7 +634,6 @@ pub fn build_view(
             }
         }
         if request.screen == Screen::Network {
-            let all = session.select_records(&filters.record_filter(request.screen), ctx)?;
             view.flows = Some(session.flow_page(Some(&all), filters.offset, filters.limit, ctx)?);
         }
         if let Some(records) = &view.records {
@@ -642,35 +657,17 @@ fn run_summaries(
     limit: usize,
     ctx: &ExecutionContext,
 ) -> Result<Page<RunSummary>> {
-    let runs = session.ai_run_headers()?;
-    let mut summaries = BTreeMap::new();
-    let mut offset_d = 0;
-    loop {
-        let page = session.diagnostic_page(offset_d, 1000)?;
-        for diagnostic in page.items {
-            ctx.check()?;
-            if diagnostic.source == "AI 本地整理"
-                && let Some(position) = diagnostic.position
-            {
-                summaries.insert(position, diagnostic.message);
-            }
-        }
-        offset_d += 1000;
-        if offset_d >= page.total {
-            break;
-        }
-    }
+    let runs = session.ai_run_header_page(offset, limit)?;
+    let indices: Vec<_> = runs.items.iter().map(|(index, _)| *index).collect();
+    let summaries = session.ai_local_summaries(&indices, ctx)?;
     Ok(Page {
         offset,
-        total: runs.len(),
+        total: runs.total,
         items: runs
+            .items
             .iter()
-            .enumerate()
-            .rev()
-            .skip(offset)
-            .take(limit)
             .map(|(index, r)| RunSummary {
-                index,
+                index: *index,
                 model: r.model.clone(),
                 endpoint: r.endpoint.clone(),
                 batches: r.batches,

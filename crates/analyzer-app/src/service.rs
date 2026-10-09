@@ -314,12 +314,16 @@ impl AnalysisService {
                                 id,
                                 count,
                                 ids: Default::default(),
+                                lazy: None,
+                                materialized: Default::default(),
                             })),
                         }
                     }
                 }
             };
-            let key = selection.stored_id().ok_or_else(|| anyhow!("筛选不可用"))?;
+            let key = selection
+                .stored_id(ctx)?
+                .ok_or_else(|| anyhow!("筛选不可用"))?;
             let mut scenes = [false; 6];
             let mut unparsed = false;
             {
@@ -445,7 +449,7 @@ impl AnalysisService {
                     if let Some(summary) = analysis.local_summary.take() {
                         tx.execute(
                             "INSERT INTO diagnostics(json) VALUES(?1)",
-                            [crate::storage::json(&core::Diagnostic {
+                            [crate::storage::packed_json(&core::Diagnostic {
                                 level: DiagnosticLevel::Warning,
                                 source: "AI 本地整理".into(),
                                 position: Some(format!("ai-run:{run}")),
@@ -457,7 +461,7 @@ impl AnalysisService {
                         failed = true;
                         tx.execute(
                             "INSERT INTO diagnostics(json) VALUES(?1)",
-                            [crate::storage::json(&core::Diagnostic {
+                            [crate::storage::packed_json(&core::Diagnostic {
                                 level: DiagnosticLevel::Error,
                                 source: "AI".into(),
                                 position: None,
@@ -471,7 +475,7 @@ impl AnalysisService {
                     cancelled |= core::execution::is_cancelled(&error);
                     tx.execute(
                         "INSERT INTO diagnostics(json) VALUES(?1)",
-                        [crate::storage::json(&core::Diagnostic {
+                        [crate::storage::packed_json(&core::Diagnostic {
                             level: DiagnosticLevel::Error,
                             source: "AI".into(),
                             position: None,
@@ -483,7 +487,7 @@ impl AnalysisService {
             if cancelled {
                 tx.execute(
                     "INSERT INTO diagnostics(json) VALUES(?1)",
-                    [crate::storage::json(&core::Diagnostic {
+                    [crate::storage::packed_json(&core::Diagnostic {
                         level: DiagnosticLevel::Error,
                         source: "AI".into(),
                         position: None,
